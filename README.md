@@ -113,9 +113,18 @@ export SLURM_DEFAULT_IMAGE="/lustre/users/username/images/pytorch.sqsh"
 
 ## Usage with MCP Clients
 
-### Cursor / Claude Desktop Configuration
+### Cursor IDE Setup
 
-Add to your MCP settings (e.g., `~/.cursor/mcp.json` or Claude Desktop config):
+#### Step 1: Open MCP Settings
+
+- Press `Ctrl+Shift+P` (Linux/Windows) or `Cmd+Shift+P` (Mac)
+- Search for "Cursor Settings" 
+- Navigate to **MCP** section
+- Or directly edit: `~/.cursor/mcp.json`
+
+#### Step 2: Add Server Configuration
+
+**Option A: Using environment variables directly**
 
 ```json
 {
@@ -129,7 +138,78 @@ Add to your MCP settings (e.g., `~/.cursor/mcp.json` or Claude Desktop config):
         "SLURM_USER_ROOT": "/lustre/users/username",
         "SLURM_GPFS_ROOT": "/lustre",
         "SLURM_DEFAULT_ACCOUNT": "my_project",
-        "SLURM_DEFAULT_IMAGE": "/lustre/users/username/images/pytorch.sqsh"
+        "SLURM_DEFAULT_PARTITION": "batch",
+        "SLURM_INTERACTIVE_PARTITION": "interactive"
+      }
+    }
+  }
+}
+```
+
+**Option B: Using an existing .env file**
+
+If you have already configured a `.env` file in the project directory:
+
+```json
+{
+  "mcpServers": {
+    "slurm": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "cd /path/to/slurm_mcp && set -a && source .env && set +a && python src/slurm_mcp/server.py"
+      ]
+    }
+  }
+}
+```
+
+**Option C: Using Python directly (development)**
+
+```json
+{
+  "mcpServers": {
+    "slurm": {
+      "command": "python",
+      "args": ["/path/to/slurm_mcp/src/slurm_mcp/server.py"],
+      "env": {
+        "SLURM_SSH_HOST": "login.cluster.example.com",
+        "SLURM_SSH_USER": "username",
+        "SLURM_SSH_KEY_PATH": "~/.ssh/id_rsa",
+        "SLURM_USER_ROOT": "/lustre/users/username"
+      }
+    }
+  }
+}
+```
+
+#### Step 3: Restart Cursor
+
+After saving the configuration, restart Cursor for changes to take effect.
+
+#### Step 4: Verify Connection
+
+1. Open Cursor Settings → MCP
+2. You should see "slurm" listed as a connected server
+3. The server provides 34 tools for cluster management
+
+### Claude Desktop Setup
+
+Add to your Claude Desktop config file:
+
+- **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "slurm": {
+      "command": "slurm-mcp",
+      "env": {
+        "SLURM_SSH_HOST": "login.cluster.example.com",
+        "SLURM_SSH_USER": "username",
+        "SLURM_SSH_KEY_PATH": "~/.ssh/id_rsa",
+        "SLURM_USER_ROOT": "/lustre/users/username"
       }
     }
   }
@@ -139,12 +219,24 @@ Add to your MCP settings (e.g., `~/.cursor/mcp.json` or Claude Desktop config):
 ### Running Standalone
 
 ```bash
-# Run directly
+# Run directly (requires environment variables or .env file)
 slurm-mcp
 
 # Or via Python
 python -m slurm_mcp.server
+
+# Or with explicit config
+SLURM_SSH_HOST=login.example.com SLURM_SSH_USER=user slurm-mcp
 ```
+
+### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Server not appearing | Check JSON syntax in config file, restart Cursor |
+| Connection timeout | Verify SSH host/credentials work: `ssh user@host` |
+| Permission denied | Check SSH key path and permissions (`chmod 600`) |
+| Tools not loading | Check server logs for errors, verify `.env` variables |
 
 ## Available Tools
 
