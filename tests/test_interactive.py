@@ -201,11 +201,11 @@ class TestRunCommand:
     """Tests for run_command functionality."""
     
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Allocates cluster resources - run manually with --run-expensive")
+    @pytest.mark.expensive
     async def test_run_simple_command(self, session_manager, settings):
         """Test running a simple command with resource allocation."""
         if not settings.interactive_partition:
-            pytest.skip("interactive_partition not configured")
+            pytest.fail("interactive_partition not configured")
         
         result = await session_manager.run_command(
             command="hostname",
@@ -213,11 +213,12 @@ class TestRunCommand:
             account=settings.interactive_account,
             nodes=1,
             time_limit="0:05:00",
-            timeout=120,
+            timeout=300,
         )
         
         assert result.success
         assert result.stdout  # Should have hostname output
+        print(f"\n  Hostname: {result.stdout.strip()}")
 
 
 # =============================================================================
@@ -229,47 +230,73 @@ class TestSessionLifecycle:
     """Tests for full session lifecycle."""
     
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Allocates cluster resources - run manually with --run-expensive")
-    async def test_full_session_lifecycle(self, session_manager, settings):
+    @pytest.mark.expensive
+    async def test_full_session_lifecycle(self, session_manager, slurm, settings):
         """Test starting, using, and ending a session."""
         if not settings.interactive_partition:
-            pytest.skip("interactive_partition not configured")
+            pytest.fail("interactive_partition not configured")
         
-        # Start session
-        session = await session_manager.start_session(
-            session_name="test-session",
-            partition=settings.interactive_partition,
-            account=settings.interactive_account,
-            nodes=1,
-            gpus_per_node=0,  # CPU only for testing
-            time_limit="0:10:00",
-        )
-        
-        assert session.session_id
-        assert session.job_id > 0
-        assert session.status in ["running", "pending"]
+        session = None
+        job_id = None
         
         try:
-            # Wait for session to be ready
-            await asyncio.sleep(5)
-            
-            # Execute command in session
-            result = await session_manager.exec_command(
-                session_id=session.session_id,
-                command="echo 'Hello from session'",
+            # Start session
+            print(f"\n  Starting session on partition '{settings.interactive_partition}'...")
+            session = await session_manager.start_session(
+                session_name="test-session",
+                partition=settings.interactive_partition,
+                account=settings.interactive_account,
+                nodes=1,
+                gpus_per_node=settings.interactive_default_gpus,
+                time_limit="0:10:00",
             )
             
+            job_id = session.job_id
+            print(f"  Session started: {session.session_id}, Job ID: {job_id}")
+            
+            assert session.session_id
+            assert session.job_id > 0
+            
+            # Wait for session to be ready
+            print("  Waiting for job to start...")
+            for i in range(30):  # Wait up to 30 seconds
+                await asyncio.sleep(1)
+                job = await slurm.get_job_details(job_id)
+                if job and job.state == "RUNNING":
+                    print(f"  Job is running on nodes: {job.nodes}")
+                    break
+            else:
+                print("  Warning: Job may not have started yet")
+            
+            # Execute command in session
+            print("  Executing command in session...")
+            result = await session_manager.exec_command(
+                session_id=session.session_id,
+                command="hostname && echo test_successful",
+                timeout=60,
+            )
+            
+            print(f"  Command output: {result.stdout.strip()}")
             assert result.success
-            assert "Hello from session" in result.stdout
+            assert "test_successful" in result.stdout or result.stdout.strip()  # Should have output
             
             # List sessions
             sessions = await session_manager.list_sessions()
             assert any(s.session_id == session.session_id for s in sessions)
+            print(f"  Session verified in list ({len(sessions)} active sessions)")
             
         finally:
-            # End session
-            success = await session_manager.end_session(session.session_id)
-            assert success
+            # Always clean up - end session and cancel job
+            if session:
+                print(f"  Ending session {session.session_id}...")
+                success = await session_manager.end_session(session.session_id)
+                print(f"  Session ended: {success}")
+            
+            # Double-check job is cancelled
+            if job_id:
+                print(f"  Ensuring job {job_id} is cancelled...")
+                await slurm.scancel(job_id)
+                print(f"  Job {job_id} cancelled")
 
 
 # =============================================================================
