@@ -26,6 +26,20 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+## Quick Start
+
+```bash
+cd /home/yidong/Projects/slurm_mcp
+pip install -e .
+
+# Configure
+cp .env.example .env
+# Edit .env with your cluster details
+
+# Run
+slurm-mcp
+```
+
 ## Configuration
 
 The server is configured via environment variables with the `SLURM_` prefix.

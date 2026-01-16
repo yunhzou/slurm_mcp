@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Create MCP server
 mcp = FastMCP(
     "slurm-mcp",
-    description="MCP server for remote Slurm cluster management via SSH",
+    instructions="MCP server for remote Slurm cluster management via SSH",
 )
 
 # Global instances (initialized on startup)

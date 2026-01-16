@@ -63,36 +63,54 @@ def _parse_slurm_time(time_str: str) -> Optional[str]:
     return time_str
 
 
-def _parse_gres(gres_str: str) -> list[GPUInfo]:
+def _parse_gres(gres_str: str, features: str = "") -> list[GPUInfo]:
     """Parse GRES string to extract GPU information.
     
     Examples:
         "gpu:a100:4" -> [GPUInfo(gpu_type='a100', count=4)]
         "gpu:4" -> [GPUInfo(gpu_type='gpu', count=4)]
+        "gpu:8(S:0-1)" with features="H100" -> [GPUInfo(gpu_type='h100', count=8)]
         "gpu:a100:2,gpu:v100:4" -> [GPUInfo(...), GPUInfo(...)]
     """
     gpus = []
     if not gres_str or gres_str in ['(null)', 'N/A', '']:
         return gpus
     
+    # Try to extract GPU type from features if available
+    gpu_type_from_features = None
+    if features:
+        # Look for known GPU types in features (e.g., "location=ap-tokyo-1,GPU,H100")
+        known_gpus = ['h100', 'a100', 'v100', 'a10', 'l40', 't4', 'a6000', 'rtx']
+        for feat in features.lower().replace(',', ' ').split():
+            for known in known_gpus:
+                if known in feat:
+                    gpu_type_from_features = feat
+                    break
+            if gpu_type_from_features:
+                break
+    
     for part in gres_str.split(','):
         part = part.strip()
         if not part.startswith('gpu'):
             continue
         
-        parts = part.split(':')
+        # Remove socket affinity info like (S:0-1)
+        base_part = part.split('(')[0]
+        parts = base_part.split(':')
+        
         if len(parts) == 2:
-            # Format: gpu:count
+            # Format: gpu:count or gpu:count(S:0-1)
             try:
                 count = int(parts[1])
-                gpus.append(GPUInfo(gpu_type='gpu', count=count))
+                gtype = gpu_type_from_features or 'gpu'
+                gpus.append(GPUInfo(gpu_type=gtype, count=count))
             except ValueError:
                 pass
         elif len(parts) >= 3:
             # Format: gpu:type:count
             try:
                 gpu_type = parts[1]
-                count = int(parts[2].split('(')[0])  # Handle gpu:a100:4(S:0-1)
+                count = int(parts[2])
                 gpus.append(GPUInfo(gpu_type=gpu_type, count=count))
             except (ValueError, IndexError):
                 pass
@@ -151,9 +169,9 @@ class SlurmCommands:
         Returns:
             List of PartitionInfo objects.
         """
-        # Use custom format to get all needed fields
-        format_str = "%P|%a|%l|%D|%C|%G|%F"
-        # %P=partition, %a=state, %l=timelimit, %D=nodes, %C=cpus(A/I/O/T), %G=gres, %F=nodes(A/I/O/T)
+        # Use custom format to get all needed fields including features
+        format_str = "%P|%a|%l|%D|%C|%G|%F|%f"
+        # %P=partition, %a=state, %l=timelimit, %D=nodes, %C=cpus(A/I/O/T), %G=gres, %F=nodes(A/I/O/T), %f=features
         
         cmd = f"sinfo -h -o '{format_str}'"
         result = await self.ssh.execute(cmd)
@@ -187,9 +205,10 @@ class SlurmCommands:
             else:
                 total_cpus = available_cpus = 0
             
-            # Parse GRES for GPU info
+            # Parse GRES for GPU info (with features for GPU type detection)
             gres = parts[5]
-            gpus = _parse_gres(gres)
+            features = parts[7] if len(parts) > 7 else ""
+            gpus = _parse_gres(gres, features)
             has_gpus = len(gpus) > 0
             gpu_types = list(set(g.gpu_type for g in gpus if g.gpu_type != 'gpu'))
             total_gpus = sum(g.count for g in gpus)
@@ -295,8 +314,9 @@ class SlurmCommands:
             
             partitions_list = [p for p in parts[6].split(',') if p]
             
-            gpus = _parse_gres(parts[7])
-            features = [f for f in parts[8].split(',') if f]
+            features_str = parts[8] if len(parts) > 8 else ""
+            gpus = _parse_gres(parts[7], features_str)
+            features = [f for f in features_str.split(',') if f]
             
             nodes[node_name] = NodeInfo(
                 node_name=node_name,
@@ -326,7 +346,8 @@ class SlurmCommands:
         Returns:
             Dictionary with GPU availability info.
         """
-        cmd = "sinfo -h -o '%P|%G|%D|%T' --Node"
+        # Include features (%f) to detect GPU type
+        cmd = "sinfo -h -o '%P|%G|%D|%T|%f' --Node"
         if partition:
             cmd += f" -p {partition}"
         
@@ -355,8 +376,9 @@ class SlurmCommands:
             gres = parts[1]
             node_count = int(parts[2]) if parts[2].isdigit() else 0
             state = parts[3].lower()
+            features = parts[4] if len(parts) > 4 else ""
             
-            gpus = _parse_gres(gres)
+            gpus = _parse_gres(gres, features)
             if not gpus:
                 continue
             
