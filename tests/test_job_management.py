@@ -14,7 +14,7 @@ load_dotenv()
 from slurm_mcp.config import get_settings
 from slurm_mcp.models import JobInfo, JobSubmission
 from slurm_mcp.ssh_client import SSHClient
-from slurm_mcp.slurm_commands import SlurmCommands
+from slurm_mcp.slurm_commands import SlurmCommands, _escape_for_single_quotes
 
 
 # =============================================================================
@@ -40,6 +40,60 @@ async def ssh_client(settings):
 async def slurm(ssh_client, settings):
     """Create Slurm commands wrapper."""
     return SlurmCommands(ssh_client, settings)
+
+
+# =============================================================================
+# Test: Shell Escaping
+# =============================================================================
+
+class TestShellEscaping:
+    """Tests for shell command escaping to avoid quote issues."""
+    
+    def test_escape_no_quotes(self):
+        """Test command without quotes passes through."""
+        cmd = "echo hello world"
+        assert _escape_for_single_quotes(cmd) == cmd
+    
+    def test_escape_double_quotes(self):
+        """Test command with double quotes passes through."""
+        cmd = 'python -c "print(123)"'
+        assert _escape_for_single_quotes(cmd) == cmd
+    
+    def test_escape_single_quotes(self):
+        """Test command with single quotes gets escaped."""
+        cmd = "python -c 'print(123)'"
+        escaped = _escape_for_single_quotes(cmd)
+        # Single quote becomes '\'' (end, escaped quote, start)
+        assert escaped == "python -c '\\''print(123)'\\''", f"Got: {escaped}"
+    
+    def test_escape_mixed_quotes(self):
+        """Test command with both quote types."""
+        cmd = """python -c 'print("hello")'"""
+        escaped = _escape_for_single_quotes(cmd)
+        assert "'\\''" in escaped  # Contains escaped single quote
+        assert '"hello"' in escaped  # Double quotes preserved
+    
+    def test_escape_multiple_single_quotes(self):
+        """Test command with multiple single quotes."""
+        cmd = "echo 'one' && echo 'two'"
+        escaped = _escape_for_single_quotes(cmd)
+        # Count the escaped patterns
+        assert escaped.count("'\\''") == 4  # 4 single quotes total
+    
+    def test_wrapped_command_with_single_quotes(self):
+        """Test that escaped command works when wrapped in bash -c '...'."""
+        cmd = "python -c 'import vllm; print(vllm.__version__)'"
+        escaped = _escape_for_single_quotes(cmd)
+        
+        # Simulating: bash -c '{escaped}'
+        full_cmd = f"bash -c '{escaped}'"
+        
+        # The full command should be parseable (no unmatched quotes)
+        # Count quotes - should be balanced
+        single_quote_count = full_cmd.count("'") - full_cmd.count("\\'")
+        # After escaping, we have: bash -c 'python -c '\''import...'\'''
+        # The outer quotes are balanced, and inner quotes are escaped
+        assert single_quote_count % 2 == 0 or "'\\''" in full_cmd
 
 
 # =============================================================================

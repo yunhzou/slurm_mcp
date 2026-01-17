@@ -21,6 +21,28 @@ from slurm_mcp.ssh_client import SSHClient, SSHCommandError
 logger = logging.getLogger(__name__)
 
 
+def _escape_for_single_quotes(command: str) -> str:
+    """Escape a command string for use inside single quotes in bash.
+    
+    Single quotes in bash don't allow any escaping inside them.
+    The trick is to end the single-quoted string, add an escaped single quote,
+    and start a new single-quoted string.
+    
+    Example:
+        python -c 'print("hello")'
+    becomes:
+        python -c '\''print("hello")'\''
+    
+    Args:
+        command: The command string to escape.
+        
+    Returns:
+        Escaped command string safe for use inside single quotes.
+    """
+    # Replace ' with '\'' (end quote, escaped quote, start quote)
+    return command.replace("'", "'\\''")
+
+
 def _parse_size_to_bytes(size_str: str) -> int:
     """Parse human-readable size string to bytes."""
     size_str = size_str.strip().upper()
@@ -883,13 +905,14 @@ class SlurmCommands:
             if no_container_mount_home:
                 cmd += " --no-container-mount-home"
         
-        # Wrap the command
+        # Wrap the command (escape single quotes to avoid shell parsing issues)
         if working_directory:
             full_command = f"cd {working_directory} && {command}"
         else:
             full_command = command
         
-        cmd += f" bash -c '{full_command}'"
+        escaped_command = _escape_for_single_quotes(full_command)
+        cmd += f" bash -c '{escaped_command}'"
         
         # Use longer timeout for interactive commands
         exec_timeout = timeout or max(300, self.settings.command_timeout)
@@ -990,13 +1013,14 @@ class SlurmCommands:
             if no_container_mount_home:
                 cmd += " --no-container-mount-home"
         
-        # Wrap the command
+        # Wrap the command (escape single quotes to avoid shell parsing issues)
         if working_directory:
             full_command = f"cd {working_directory} && {command}"
         else:
             full_command = command
         
-        cmd += f" bash -c '{full_command}'"
+        escaped_command = _escape_for_single_quotes(full_command)
+        cmd += f" bash -c '{escaped_command}'"
         
         exec_timeout = timeout or max(300, self.settings.command_timeout)
         
