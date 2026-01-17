@@ -13,6 +13,26 @@ from slurm_mcp.models import CommandResult
 logger = logging.getLogger(__name__)
 
 
+def _quote_path(path: str) -> str:
+    """Quote a path for safe use in shell commands.
+    
+    Uses double quotes to handle paths with spaces and most special characters.
+    Escapes any existing double quotes, backticks, and dollar signs in the path.
+    
+    Args:
+        path: The file path to quote.
+        
+    Returns:
+        Quoted path safe for shell use.
+    """
+    # Escape characters that have special meaning inside double quotes
+    escaped = path.replace('\\', '\\\\')  # Escape backslashes first
+    escaped = escaped.replace('"', '\\"')  # Escape double quotes
+    escaped = escaped.replace('`', '\\`')  # Escape backticks
+    escaped = escaped.replace('$', '\\$')  # Escape dollar signs
+    return f'"{escaped}"'
+
+
 class SSHConnectionError(Exception):
     """Raised when SSH connection fails."""
     pass
@@ -249,7 +269,8 @@ class SSHClient:
         try:
             if make_dirs:
                 parent_dir = str(Path(remote_path).parent)
-                await self.execute(f"mkdir -p {parent_dir}")
+                quoted_parent = _quote_path(parent_dir)
+                await self.execute(f"mkdir -p {quoted_parent}")
             
             async with self._connection.start_sftp_client() as sftp:
                 async with sftp.open(remote_path, "w") as f:
@@ -384,8 +405,9 @@ class SSHClient:
         await self.ensure_connected()
         
         if recursive:
-            # Use rm -rf for recursive deletion
-            result = await self.execute(f"rm -rf {remote_path}")
+            # Use rm -rf for recursive deletion (quote path for spaces/special chars)
+            quoted_path = _quote_path(remote_path)
+            result = await self.execute(f"rm -rf {quoted_path}")
             if not result.success:
                 raise SSHCommandError(f"Failed to delete directory {remote_path}: {result.stderr}")
         else:
@@ -414,7 +436,8 @@ class SSHClient:
                 attrs = await sftp.stat(remote_path)
                 
                 # Get owner/group names using shell command
-                result = await self.execute(f"stat -c '%U %G' {remote_path}")
+                quoted_path = _quote_path(remote_path)
+                result = await self.execute(f"stat -c '%U %G' {quoted_path}")
                 owner, group = "unknown", "unknown"
                 if result.success and result.stdout.strip():
                     parts = result.stdout.strip().split()

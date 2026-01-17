@@ -14,6 +14,26 @@ from slurm_mcp.ssh_client import SSHClient, SSHCommandError
 logger = logging.getLogger(__name__)
 
 
+def _quote_path(path: str) -> str:
+    """Quote a path for safe use in shell commands.
+    
+    Uses double quotes to handle paths with spaces and most special characters.
+    Escapes any existing double quotes, backticks, and dollar signs in the path.
+    
+    Args:
+        path: The file path to quote.
+        
+    Returns:
+        Quoted path safe for shell use.
+    """
+    # Escape characters that have special meaning inside double quotes
+    escaped = path.replace('\\', '\\\\')  # Escape backslashes first
+    escaped = escaped.replace('"', '\\"')  # Escape double quotes
+    escaped = escaped.replace('`', '\\`')  # Escape backticks
+    escaped = escaped.replace('$', '\\$')  # Escape dollar signs
+    return f'"{escaped}"'
+
+
 def _bytes_to_human(size_bytes: int) -> str:
     """Convert bytes to human-readable string."""
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -177,13 +197,14 @@ class DirectoryManager:
             DirectoryListing object.
         """
         full_path = self.resolve_path(path, directory_type)
+        quoted_path = _quote_path(full_path)
         
         # Build command
         if recursive:
             depth_arg = f"-maxdepth {max_depth}" if max_depth else ""
-            cmd = f"find {full_path} {depth_arg} -printf '%y|%p|%s|%T@|%m|%u|%g\\n' 2>/dev/null"
+            cmd = f"find {quoted_path} {depth_arg} -printf '%y|%p|%s|%T@|%m|%u|%g\\n' 2>/dev/null"
         else:
-            cmd = f"find {full_path} -maxdepth 1 -printf '%y|%p|%s|%T@|%m|%u|%g\\n' 2>/dev/null"
+            cmd = f"find {quoted_path} -maxdepth 1 -printf '%y|%p|%s|%T@|%m|%u|%g\\n' 2>/dev/null"
         
         result = await self.ssh.execute(cmd)
         
@@ -387,16 +408,17 @@ class DirectoryManager:
             File contents.
         """
         full_path = self.resolve_path(path, directory_type)
+        quoted_path = _quote_path(full_path)
         
         if tail_lines:
-            cmd = f"tail -n {tail_lines} {full_path}"
+            cmd = f"tail -n {tail_lines} {quoted_path}"
             result = await self.ssh.execute(cmd)
             if result.success:
                 return result.stdout
             raise SSHCommandError(f"Failed to read file: {result.stderr}")
         
         if head_lines:
-            cmd = f"head -n {head_lines} {full_path}"
+            cmd = f"head -n {head_lines} {quoted_path}"
             result = await self.ssh.execute(cmd)
             if result.success:
                 return result.stdout
@@ -425,9 +447,10 @@ class DirectoryManager:
         
         if append:
             # Use shell for append
-            # Escape content for shell
+            # Escape content for shell (single quotes)
             escaped = content.replace("'", "'\\''")
-            cmd = f"echo '{escaped}' >> {full_path}"
+            quoted_path = _quote_path(full_path)
+            cmd = f"echo '{escaped}' >> {quoted_path}"
             result = await self.ssh.execute(cmd)
             if not result.success:
                 raise SSHCommandError(f"Failed to append to file: {result.stderr}")
@@ -494,8 +517,9 @@ class DirectoryManager:
         else:
             search_path = self.settings.user_root
         
-        # Build find command
-        cmd = f"find {search_path} -name '{pattern}'"
+        # Build find command (quote path for spaces/special chars)
+        quoted_path = _quote_path(search_path)
+        cmd = f"find {quoted_path} -name '{pattern}'"
         
         if file_type:
             type_map = {"file": "f", "dir": "d", "link": "l"}
@@ -620,7 +644,8 @@ class DirectoryManager:
         usage = {}
         
         for name, dir_path in paths.items():
-            cmd = f"du -sb {dir_path} 2>/dev/null"
+            quoted_path = _quote_path(dir_path)
+            cmd = f"du -sb {quoted_path} 2>/dev/null"
             result = await self.ssh.execute(cmd)
             
             if result.success and result.stdout.strip():
@@ -636,7 +661,8 @@ class DirectoryManager:
         # Get filesystem info
         if paths:
             first_path = list(paths.values())[0]
-            cmd = f"df -B1 {first_path} 2>/dev/null"
+            quoted_first = _quote_path(first_path)
+            cmd = f"df -B1 {quoted_first} 2>/dev/null"
             result = await self.ssh.execute(cmd)
             
             if result.success:

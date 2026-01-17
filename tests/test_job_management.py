@@ -14,7 +14,7 @@ load_dotenv()
 from slurm_mcp.config import get_settings
 from slurm_mcp.models import JobInfo, JobSubmission
 from slurm_mcp.ssh_client import SSHClient
-from slurm_mcp.slurm_commands import SlurmCommands, _escape_for_single_quotes
+from slurm_mcp.slurm_commands import SlurmCommands, _escape_for_single_quotes, _quote_path
 
 
 # =============================================================================
@@ -94,6 +94,55 @@ class TestShellEscaping:
         # After escaping, we have: bash -c 'python -c '\''import...'\'''
         # The outer quotes are balanced, and inner quotes are escaped
         assert single_quote_count % 2 == 0 or "'\\''" in full_cmd
+
+
+class TestPathQuoting:
+    """Tests for path quoting to handle spaces and special characters."""
+    
+    def test_quote_simple_path(self):
+        """Test simple path gets quoted."""
+        path = "/home/user/file.txt"
+        quoted = _quote_path(path)
+        assert quoted == '"/home/user/file.txt"'
+    
+    def test_quote_path_with_spaces(self):
+        """Test path with spaces is properly quoted."""
+        path = "/home/user/my files/data.txt"
+        quoted = _quote_path(path)
+        assert quoted == '"/home/user/my files/data.txt"'
+    
+    def test_quote_path_with_double_quotes(self):
+        """Test path with double quotes gets escaped."""
+        path = '/home/user/file"name.txt'
+        quoted = _quote_path(path)
+        assert quoted == '"/home/user/file\\"name.txt"'
+    
+    def test_quote_path_with_dollar_sign(self):
+        """Test path with dollar sign gets escaped."""
+        path = "/home/user/$HOME/file.txt"
+        quoted = _quote_path(path)
+        assert quoted == '"/home/user/\\$HOME/file.txt"'
+    
+    def test_quote_path_with_backticks(self):
+        """Test path with backticks gets escaped."""
+        path = "/home/user/`cmd`/file.txt"
+        quoted = _quote_path(path)
+        assert quoted == '"/home/user/\\`cmd\\`/file.txt"'
+    
+    def test_quote_path_with_backslash(self):
+        """Test path with backslash gets escaped."""
+        path = "/home/user/file\\name.txt"
+        quoted = _quote_path(path)
+        assert quoted == '"/home/user/file\\\\name.txt"'
+    
+    def test_quote_complex_path(self):
+        """Test path with multiple special characters."""
+        path = '/home/user/my files/$var/file"name.txt'
+        quoted = _quote_path(path)
+        # Should escape: " -> \", $ -> \$
+        assert '\\$var' in quoted
+        assert '\\"' in quoted
+        assert 'my files' in quoted
 
 
 # =============================================================================

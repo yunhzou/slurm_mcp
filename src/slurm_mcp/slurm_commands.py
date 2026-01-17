@@ -43,6 +43,26 @@ def _escape_for_single_quotes(command: str) -> str:
     return command.replace("'", "'\\''")
 
 
+def _quote_path(path: str) -> str:
+    """Quote a path for safe use in shell commands.
+    
+    Uses double quotes to handle paths with spaces and most special characters.
+    Escapes any existing double quotes, backticks, and dollar signs in the path.
+    
+    Args:
+        path: The file path to quote.
+        
+    Returns:
+        Quoted path safe for shell use.
+    """
+    # Escape characters that have special meaning inside double quotes
+    escaped = path.replace('\\', '\\\\')  # Escape backslashes first
+    escaped = escaped.replace('"', '\\"')  # Escape double quotes
+    escaped = escaped.replace('`', '\\`')  # Escape backticks
+    escaped = escaped.replace('$', '\\$')  # Escape dollar signs
+    return f'"{escaped}"'
+
+
 def _parse_size_to_bytes(size_str: str) -> int:
     """Parse human-readable size string to bytes."""
     size_str = size_str.strip().upper()
@@ -789,11 +809,12 @@ class SlurmCommands:
         if not search_dir:
             return []
         
-        # Build find command
+        # Build find command (quote path for spaces/special chars)
+        quoted_dir = _quote_path(search_dir)
         if pattern:
-            cmd = f"find {search_dir} -maxdepth 2 -name '{pattern}' -name '*.sqsh' -type f"
+            cmd = f"find {quoted_dir} -maxdepth 2 -name '{pattern}' -name '*.sqsh' -type f"
         else:
-            cmd = f"find {search_dir} -maxdepth 2 -name '*.sqsh' -type f"
+            cmd = f"find {quoted_dir} -maxdepth 2 -name '*.sqsh' -type f"
         
         cmd += " -printf '%p|%s|%T@\\n' 2>/dev/null | sort -t'|' -k3 -rn"
         
@@ -834,7 +855,8 @@ class SlurmCommands:
         Returns:
             True if image is valid.
         """
-        result = await self.ssh.execute(f"test -r {image_path} && file {image_path}")
+        quoted_path = _quote_path(image_path)
+        result = await self.ssh.execute(f"test -r {quoted_path} && file {quoted_path}")
         
         if not result.success:
             return False
