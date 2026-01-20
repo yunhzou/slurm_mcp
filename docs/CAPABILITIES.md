@@ -126,19 +126,19 @@ Found 61 nodes:
 
 **User:** "What jobs do I have running?"
 
-**LLM calls:** `list_jobs(user="yidong")`
+**LLM calls:** `list_jobs(user="username")`
 
 **Response:**
 ```
 Found 2 jobs:
 
   Job 2986269: training-gpt
-    User: yidong, State: RUNNING
+    User: username, State: RUNNING
     Partition: batch_block1, Nodes: 4, CPUs: 896, GPUs: 32
     Time: 2:30:00 / 8:00:00
 
   Job 2986301: data-preprocessing
-    User: yidong, State: PENDING
+    User: username, State: PENDING
     Partition: batch_short, Nodes: 1, CPUs: 32
     Time: N/A / 1:00:00
     Reason: Resources
@@ -152,12 +152,12 @@ Found 2 jobs:
     script_content="python train.py --epochs 100",
     job_name="my-training",
     partition="batch_block1",
-    account="nvr_lpr_agentic",
+    account="your_project",
     nodes=1,
     gpus=8,
     time_limit="4:00:00",
-    container_image="/lustre/fsw/portfolios/nvr/users/yidong/data/models/images/pytorch.sqsh",
-    container_mounts="/lustre/fsw/portfolios/nvr/users/yidong/data:/data"
+    container_image="/lustre/users/username/images/pytorch.sqsh",
+    container_mounts="/lustre/users/username/data:/data"
 )`
 
 **Response:**
@@ -185,7 +185,7 @@ Job 2986350 cancelled successfully.
 **Response:**
 ```
 Job 2986269: training-gpt
-  User: yidong
+  User: username
   State: RUNNING
   Partition: batch_block1
   Nodes: pool0-01438,pool0-01439,pool0-01440,pool0-01441 (4 requested)
@@ -194,9 +194,9 @@ Job 2986269: training-gpt
   Memory: 512G
   Time Limit: 8:00:00
   Time Used: 2:35:12
-  Working Dir: /lustre/fsw/portfolios/nvr/users/yidong/Projects/gpt
-  Stdout: /lustre/fsw/portfolios/nvr/users/yidong/logs/2986269.out
-  Stderr: /lustre/fsw/portfolios/nvr/users/yidong/logs/2986269.err
+  Working Dir: /lustre/users/username/Projects/gpt
+  Stdout: /lustre/users/username/logs/2986269.out
+  Stderr: /lustre/users/username/logs/2986269.err
   Submitted: 2026-01-16T10:00:00
   Started: 2026-01-16T10:05:23
 ```
@@ -205,7 +205,7 @@ Job 2986269: training-gpt
 
 **User:** "Show my job history from the past week"
 
-**LLM calls:** `get_job_history(user="yidong", start_time="now-7days")`
+**LLM calls:** `get_job_history(user="username", start_time="now-7days")`
 
 **Response:**
 ```
@@ -237,8 +237,8 @@ JobID        JobName        Partition  State      Elapsed    ExitCode
 ```
 Found 23 container images:
 
-  nvidian+nemo+verl_v2_enroot_dev0.8.5.sqsh
-    Path: /lustre/.../images/nvidian+nemo+verl_v2_enroot_dev0.8.5.sqsh
+  nemo_verl_v2_dev0.8.5.sqsh
+    Path: /lustre/.../images/nemo_verl_v2_dev0.8.5.sqsh
     Size: 29.5GB
     Modified: 2025-12-15 14:30
 
@@ -478,7 +478,7 @@ Use exec_in_session(session_id='e5f6g7h8', command='...') to run commands.
 **Response:**
 ```
 Cluster Directory Structure:
-  User Root: /lustre/fsw/portfolios/nvr/users/yidong/
+  User Root: /lustre/users/username/
 
 Configured Directories (host path -> container mount):
   Datasets:       /lustre/.../data -> /datasets
@@ -630,7 +630,7 @@ Filesystem:
 
 **Response:**
 ```
-Disk quotas for user yidong:
+Disk quotas for user username:
      Filesystem   space   quota   limit   grace   files   quota   limit
      /lustre      2.1TB   5.0TB   6.0TB           45231   unlimited
 ```

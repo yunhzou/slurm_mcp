@@ -29,14 +29,17 @@ pip install -e ".[dev]"
 ## Quick Start
 
 ```bash
-cd /home/yidong/Projects/slurm_mcp
+cd /path/to/slurm_mcp
 pip install -e .
 
 # Configure
 cp .env.example .env
 # Edit .env with your cluster details
 
-# Run
+# Generate mcp.json for Cursor/Claude Desktop
+slurm-mcp-config .env -o mcp.json
+
+# Or run directly
 slurm-mcp
 ```
 
@@ -110,6 +113,30 @@ export SLURM_DEFAULT_ACCOUNT="my_project"
 export SLURM_INTERACTIVE_PARTITION="interactive"
 export SLURM_DEFAULT_IMAGE="/lustre/users/username/images/pytorch.sqsh"
 ```
+
+## Generating MCP Configuration
+
+The `slurm-mcp-config` tool automatically converts your `.env` file to `mcp.json` format:
+
+```bash
+# Output to stdout
+slurm-mcp-config .env
+
+# Write to a file
+slurm-mcp-config .env -o mcp.json
+
+# Merge into existing Cursor config
+slurm-mcp-config .env --merge ~/.cursor/mcp.json
+
+# Use a custom server name
+slurm-mcp-config .env --server-name my-cluster
+```
+
+Options:
+- `-o, --output FILE` - Write to file instead of stdout
+- `--merge FILE` - Merge into an existing mcp.json (preserves other servers)
+- `--server-name NAME` - Custom server name (default: "slurm")
+- `--command CMD` - Custom command (default: "slurm-mcp")
 
 ## Usage with MCP Clients
 

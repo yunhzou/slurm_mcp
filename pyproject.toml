@@ -45,6 +45,7 @@ dev = [
 
 [project.scripts]
 slurm-mcp = "slurm_mcp.server:main"
+slurm-mcp-config = "slurm_mcp.env_to_mcp:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/slurm-mcp"
