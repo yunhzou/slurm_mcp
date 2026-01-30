@@ -1,12 +1,13 @@
 """Cluster manager for handling multiple Slurm clusters.
 
 This module provides the ClusterManager class which manages connections
-and resources for multiple Slurm clusters.
+and resources for multiple Slurm clusters, with support for different
+node types (login, data, vscode) within each cluster.
 """
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from slurm_mcp.config import ClusterConfig, MultiClusterConfig, get_cluster_configs
@@ -20,16 +21,66 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class NodeConnection:
+    """Represents a connection to a specific node."""
+    
+    hostname: str
+    ssh_client: SSHClient
+    connected: bool = False
+
+
+@dataclass
 class ClusterInstances:
-    """Container for all instances related to a single cluster."""
+    """Container for all instances related to a single cluster.
+    
+    Supports multiple node connections within the same cluster.
+    """
     
     config: ClusterConfig
-    ssh_client: SSHClient
-    slurm_commands: SlurmCommands
-    session_manager: InteractiveSessionManager
-    profile_manager: ProfileManager
-    directory_manager: DirectoryManager
-    connected: bool = False
+    # Node connections keyed by hostname
+    node_connections: dict[str, NodeConnection] = field(default_factory=dict)
+    # Current active node hostname
+    current_node: Optional[str] = None
+    
+    @property
+    def ssh_client(self) -> Optional[SSHClient]:
+        """Get SSH client for current node."""
+        if self.current_node and self.current_node in self.node_connections:
+            return self.node_connections[self.current_node].ssh_client
+        return None
+    
+    @property
+    def connected(self) -> bool:
+        """Check if any node is connected."""
+        return any(nc.connected for nc in self.node_connections.values())
+    
+    @property
+    def slurm_commands(self) -> Optional[SlurmCommands]:
+        """Get Slurm commands for current node."""
+        if self.ssh_client:
+            return SlurmCommands(self.ssh_client, self.config)
+        return None
+    
+    @property
+    def session_manager(self) -> Optional[InteractiveSessionManager]:
+        """Get session manager for current node."""
+        if self.ssh_client and self.slurm_commands:
+            return InteractiveSessionManager(self.ssh_client, self.slurm_commands, self.config)
+        return None
+    
+    @property
+    def profile_manager(self) -> Optional[ProfileManager]:
+        """Get profile manager for current node."""
+        if self.ssh_client:
+            return ProfileManager(self.ssh_client, self.config)
+        return None
+    
+    @property
+    def directory_manager(self) -> Optional[DirectoryManager]:
+        """Get directory manager for current node."""
+        if self.ssh_client:
+            return DirectoryManager(self.ssh_client, self.config)
+        return None
 
 
 class ClusterManager:
@@ -37,7 +88,8 @@ class ClusterManager:
     
     This class handles:
     - Loading cluster configurations
-    - Managing SSH connections for each cluster
+    - Managing SSH connections to different nodes within each cluster
+    - Supporting different node types (login, data, vscode)
     - Providing cluster-specific instances (SlurmCommands, etc.)
     - Session-level default cluster selection
     
@@ -45,14 +97,17 @@ class ClusterManager:
         manager = ClusterManager()
         await manager.initialize()
         
-        # Get instances for default cluster
+        # Connect to default cluster, default node
         instances = await manager.get_cluster_instances()
         
-        # Get instances for specific cluster
-        instances = await manager.get_cluster_instances("cluster2")
+        # Connect to specific cluster and node type
+        instances = await manager.get_cluster_instances("cluster1", node="data")
         
-        # List all clusters
-        clusters = manager.list_clusters()
+        # Connect to specific hostname
+        instances = await manager.get_cluster_instances("cluster1", node="cluster1-dc-02.example.com")
+        
+        # List all available nodes
+        nodes = manager.list_cluster_nodes("cluster1")
     """
     
     def __init__(self, config: Optional[MultiClusterConfig] = None):
@@ -113,53 +168,46 @@ class ClusterManager:
             
             # Initialize cluster instances (lazy - connections made on first use)
             for cluster_config in self._config.clusters:
-                self._clusters[cluster_config.name] = self._create_cluster_instances(cluster_config)
+                self._clusters[cluster_config.name] = ClusterInstances(
+                    config=cluster_config,
+                    node_connections={},
+                    current_node=None,
+                )
             
             self._initialized = True
             logger.info(f"ClusterManager initialized with {len(self._clusters)} cluster(s)")
     
-    def _create_cluster_instances(self, config: ClusterConfig) -> ClusterInstances:
-        """Create instances for a cluster (without connecting).
+    def _create_ssh_client(self, config: ClusterConfig, hostname: str) -> SSHClient:
+        """Create an SSH client for a specific hostname.
         
         Args:
             config: Cluster configuration.
+            hostname: The hostname to connect to.
             
         Returns:
-            ClusterInstances with all managers initialized.
+            SSHClient configured for the hostname.
         """
-        # Create SSH client
-        ssh_client = SSHClient(config)
-        
-        # Create Slurm commands wrapper
-        slurm_commands = SlurmCommands(ssh_client, config)
-        
-        # Create session manager
-        session_manager = InteractiveSessionManager(ssh_client, slurm_commands, config)
-        
-        # Create profile manager
-        profile_manager = ProfileManager(ssh_client, config)
-        
-        # Create directory manager
-        directory_manager = DirectoryManager(ssh_client, config)
-        
-        return ClusterInstances(
-            config=config,
-            ssh_client=ssh_client,
-            slurm_commands=slurm_commands,
-            session_manager=session_manager,
-            profile_manager=profile_manager,
-            directory_manager=directory_manager,
-            connected=False,
-        )
+        # Create a modified config with the specific hostname
+        # We use the same config but override ssh_host when connecting
+        return SSHClient(config, hostname_override=hostname)
     
-    async def get_cluster_instances(self, cluster_name: Optional[str] = None) -> ClusterInstances:
-        """Get instances for a cluster, connecting if necessary.
+    async def get_cluster_instances(
+        self,
+        cluster_name: Optional[str] = None,
+        node: Optional[str] = None,
+    ) -> ClusterInstances:
+        """Get instances for a cluster and node, connecting if necessary.
         
         Args:
             cluster_name: Name of the cluster. If None, uses default cluster.
+            node: Node specification. Can be:
+                - None: Use default node type (usually 'login')
+                - Node type: 'login', 'data', 'vscode'
+                - Specific hostname
+                - 'type:index' format: e.g., 'login:1'
             
         Returns:
-            ClusterInstances for the requested cluster.
+            ClusterInstances for the requested cluster/node.
             
         Raises:
             ValueError: If cluster is not found or manager not initialized.
@@ -178,16 +226,34 @@ class ClusterManager:
             raise ValueError(f"Cluster '{cluster_name}' not found. Available: {list(self._clusters.keys())}")
         
         instances = self._clusters[cluster_name]
+        config = instances.config
+        
+        # Resolve the hostname
+        hostname = config.get_ssh_host(node)
+        
+        # Check if we already have a connection to this node
+        if hostname not in instances.node_connections:
+            # Create new connection
+            ssh_client = self._create_ssh_client(config, hostname)
+            instances.node_connections[hostname] = NodeConnection(
+                hostname=hostname,
+                ssh_client=ssh_client,
+                connected=False,
+            )
+        
+        node_conn = instances.node_connections[hostname]
         
         # Connect if not already connected
-        if not instances.connected:
+        if not node_conn.connected:
             async with self._lock:
-                # Double-check after acquiring lock
-                if not instances.connected:
-                    logger.info(f"Connecting to cluster '{cluster_name}'...")
-                    await instances.ssh_client.connect()
-                    instances.connected = True
-                    logger.info(f"Connected to cluster '{cluster_name}'")
+                if not node_conn.connected:
+                    logger.info(f"Connecting to {cluster_name}:{hostname}...")
+                    await node_conn.ssh_client.connect()
+                    node_conn.connected = True
+                    logger.info(f"Connected to {cluster_name}:{hostname}")
+        
+        # Set current node
+        instances.current_node = hostname
         
         return instances
     
@@ -195,21 +261,50 @@ class ClusterManager:
         """List all configured clusters.
         
         Returns:
-            List of cluster info dictionaries with name, description, host, and connection status.
+            List of cluster info dictionaries.
         """
         clusters = []
         
         for name, instances in self._clusters.items():
+            config = instances.config
+            
+            # Get available nodes info
+            available_nodes = config.list_available_nodes()
+            
+            # Get connected nodes
+            connected_nodes = [
+                hostname for hostname, nc in instances.node_connections.items()
+                if nc.connected
+            ]
+            
             clusters.append({
                 "name": name,
-                "description": instances.config.description,
-                "ssh_host": instances.config.ssh_host,
-                "ssh_user": instances.config.ssh_user,
-                "connected": instances.connected,
+                "description": config.description,
+                "ssh_user": config.ssh_user,
+                "available_nodes": available_nodes,
+                "connected_nodes": connected_nodes,
+                "current_node": instances.current_node,
                 "is_default": name == self._default_cluster,
             })
         
         return clusters
+    
+    def list_cluster_nodes(self, cluster_name: Optional[str] = None) -> dict[str, list[str]]:
+        """List all available nodes for a cluster.
+        
+        Args:
+            cluster_name: Name of the cluster. If None, uses default cluster.
+            
+        Returns:
+            Dictionary mapping node types to list of hostnames.
+        """
+        if cluster_name is None:
+            cluster_name = self._default_cluster
+        
+        if cluster_name and cluster_name in self._clusters:
+            return self._clusters[cluster_name].config.list_available_nodes()
+        
+        return {}
     
     def get_cluster_config(self, cluster_name: Optional[str] = None) -> Optional[ClusterConfig]:
         """Get configuration for a specific cluster.
@@ -228,33 +323,54 @@ class ClusterManager:
         
         return None
     
-    async def connect_cluster(self, cluster_name: str) -> bool:
-        """Explicitly connect to a cluster.
+    async def connect_node(self, cluster_name: str, node: Optional[str] = None) -> str:
+        """Explicitly connect to a specific node.
         
         Args:
-            cluster_name: Name of the cluster to connect.
+            cluster_name: Name of the cluster.
+            node: Node specification (type, hostname, or type:index).
             
         Returns:
-            True if connection successful.
+            The hostname that was connected to.
             
         Raises:
             ValueError: If cluster not found.
         """
+        instances = await self.get_cluster_instances(cluster_name, node)
+        return instances.current_node or ""
+    
+    async def disconnect_node(self, cluster_name: str, hostname: str) -> bool:
+        """Disconnect from a specific node.
+        
+        Args:
+            cluster_name: Name of the cluster.
+            hostname: The hostname to disconnect.
+            
+        Returns:
+            True if disconnection successful.
+        """
         if cluster_name not in self._clusters:
-            raise ValueError(f"Cluster '{cluster_name}' not found")
+            return False
         
         instances = self._clusters[cluster_name]
         
-        if not instances.connected:
-            async with self._lock:
-                if not instances.connected:
-                    await instances.ssh_client.connect()
-                    instances.connected = True
+        if hostname in instances.node_connections:
+            node_conn = instances.node_connections[hostname]
+            if node_conn.connected:
+                async with self._lock:
+                    if node_conn.connected:
+                        await node_conn.ssh_client.disconnect()
+                        node_conn.connected = False
+                        
+                        # Clear current node if it was this one
+                        if instances.current_node == hostname:
+                            instances.current_node = None
+            return True
         
-        return True
+        return False
     
     async def disconnect_cluster(self, cluster_name: str) -> bool:
-        """Disconnect from a cluster.
+        """Disconnect all nodes from a cluster.
         
         Args:
             cluster_name: Name of the cluster to disconnect.
@@ -267,16 +383,13 @@ class ClusterManager:
         
         instances = self._clusters[cluster_name]
         
-        if instances.connected:
-            async with self._lock:
-                if instances.connected:
-                    await instances.ssh_client.disconnect()
-                    instances.connected = False
+        for hostname in list(instances.node_connections.keys()):
+            await self.disconnect_node(cluster_name, hostname)
         
         return True
     
     async def disconnect_all(self) -> None:
-        """Disconnect from all clusters."""
+        """Disconnect from all clusters and nodes."""
         for cluster_name in self._clusters:
             await self.disconnect_cluster(cluster_name)
     

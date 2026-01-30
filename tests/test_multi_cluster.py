@@ -7,10 +7,50 @@ import pytest
 
 from slurm_mcp.config import (
     ClusterConfig,
+    ClusterNodes,
     MultiClusterConfig,
     load_clusters_config,
     get_cluster_configs,
 )
+
+
+class TestClusterNodes:
+    """Tests for ClusterNodes model."""
+
+    def test_create_cluster_nodes(self):
+        """Test creating cluster nodes config."""
+        nodes = ClusterNodes(
+            login=["login-01.example.com", "login-02.example.com"],
+            data=["dc-01.example.com", "dc-02.example.com"],
+            vscode=["vscode-01.example.com"],
+        )
+        assert len(nodes.login) == 2
+        assert len(nodes.data) == 2
+        assert len(nodes.vscode) == 1
+
+    def test_get_node_by_type_and_index(self):
+        """Test getting a node by type and index."""
+        nodes = ClusterNodes(
+            login=["login-01.example.com", "login-02.example.com"],
+            data=["dc-01.example.com"],
+        )
+        assert nodes.get_node("login", 0) == "login-01.example.com"
+        assert nodes.get_node("login", 1) == "login-02.example.com"
+        assert nodes.get_node("data", 0) == "dc-01.example.com"
+        assert nodes.get_node("login", 99) is None  # Out of range
+        assert nodes.get_node("vscode", 0) is None  # Empty list
+
+    def test_list_all_nodes(self):
+        """Test listing all nodes by type."""
+        nodes = ClusterNodes(
+            login=["login-01.example.com"],
+            data=["dc-01.example.com", "dc-02.example.com"],
+        )
+        all_nodes = nodes.list_all_nodes()
+        assert "login" in all_nodes
+        assert "data" in all_nodes
+        assert "vscode" in all_nodes
+        assert len(all_nodes["data"]) == 2
 
 
 class TestClusterConfig:
@@ -27,6 +67,115 @@ class TestClusterConfig:
         assert config.name == "test-cluster"
         assert config.ssh_host == "login.example.com"
         assert config.ssh_user == "testuser"
+
+    def test_create_cluster_config_with_nodes(self):
+        """Test creating cluster config with multiple nodes."""
+        config = ClusterConfig(
+            name="test-cluster",
+            ssh_user="testuser",
+            user_root="/home/testuser",
+            nodes=ClusterNodes(
+                login=["login-01.example.com", "login-02.example.com"],
+                data=["dc-01.example.com"],
+                vscode=["vscode-01.example.com"],
+            ),
+        )
+        assert config.nodes is not None
+        assert len(config.nodes.login) == 2
+
+    def test_get_ssh_host_legacy(self):
+        """Test get_ssh_host with legacy ssh_host setting."""
+        config = ClusterConfig(
+            name="test",
+            ssh_host="legacy.example.com",
+            ssh_user="user",
+            user_root="/home/user",
+        )
+        assert config.get_ssh_host() == "legacy.example.com"
+        assert config.get_ssh_host(None) == "legacy.example.com"
+
+    def test_get_ssh_host_by_type(self):
+        """Test get_ssh_host with node type."""
+        config = ClusterConfig(
+            name="test",
+            ssh_user="user",
+            user_root="/home/user",
+            nodes=ClusterNodes(
+                login=["login-01.example.com", "login-02.example.com"],
+                data=["dc-01.example.com"],
+                vscode=["vscode-01.example.com"],
+            ),
+        )
+        assert config.get_ssh_host("login") == "login-01.example.com"
+        assert config.get_ssh_host("data") == "dc-01.example.com"
+        assert config.get_ssh_host("vscode") == "vscode-01.example.com"
+
+    def test_get_ssh_host_by_type_index(self):
+        """Test get_ssh_host with type:index format."""
+        config = ClusterConfig(
+            name="test",
+            ssh_user="user",
+            user_root="/home/user",
+            nodes=ClusterNodes(
+                login=["login-01.example.com", "login-02.example.com", "login-03.example.com"],
+            ),
+        )
+        assert config.get_ssh_host("login:0") == "login-01.example.com"
+        assert config.get_ssh_host("login:1") == "login-02.example.com"
+        assert config.get_ssh_host("login:2") == "login-03.example.com"
+
+    def test_get_ssh_host_direct_hostname(self):
+        """Test get_ssh_host with direct hostname."""
+        config = ClusterConfig(
+            name="test",
+            ssh_user="user",
+            user_root="/home/user",
+            nodes=ClusterNodes(
+                login=["login-01.example.com"],
+            ),
+        )
+        # Direct hostname that matches a configured node
+        assert config.get_ssh_host("login-01.example.com") == "login-01.example.com"
+        # Direct hostname that doesn't match but has a dot (treated as hostname)
+        assert config.get_ssh_host("other.example.com") == "other.example.com"
+
+    def test_get_ssh_host_raises_when_no_host(self):
+        """Test get_ssh_host raises when no host can be determined."""
+        config = ClusterConfig(
+            name="test",
+            ssh_user="user",
+            user_root="/home/user",
+            # No ssh_host and no nodes configured
+        )
+        with pytest.raises(ValueError, match="Cannot determine SSH host"):
+            config.get_ssh_host("nonexistent")
+
+    def test_list_available_nodes(self):
+        """Test listing available nodes."""
+        config = ClusterConfig(
+            name="test",
+            ssh_user="user",
+            user_root="/home/user",
+            nodes=ClusterNodes(
+                login=["login-01.example.com", "login-02.example.com"],
+                data=["dc-01.example.com"],
+            ),
+        )
+        nodes = config.list_available_nodes()
+        assert "login" in nodes
+        assert len(nodes["login"]) == 2
+
+    def test_list_available_nodes_legacy(self):
+        """Test listing available nodes with legacy ssh_host."""
+        config = ClusterConfig(
+            name="test",
+            ssh_host="legacy.example.com",
+            ssh_user="user",
+            user_root="/home/user",
+        )
+        nodes = config.list_available_nodes()
+        assert "default" in nodes
+        assert nodes["default"] == ["legacy.example.com"]
 
     def test_default_directory_paths(self):
         """Test that directory paths are auto-generated from user_root."""
@@ -203,6 +352,38 @@ class TestLoadClustersConfig:
         finally:
             os.unlink(temp_path)
 
+    def test_load_with_nodes(self):
+        """Test loading config with multiple nodes."""
+        config_data = {
+            "default_cluster": "test",
+            "clusters": [
+                {
+                    "name": "test",
+                    "ssh_user": "testuser",
+                    "user_root": "/home/testuser",
+                    "nodes": {
+                        "login": ["login-01.example.com", "login-02.example.com"],
+                        "data": ["dc-01.example.com"],
+                        "vscode": ["vscode-01.example.com"],
+                    },
+                }
+            ],
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_data, f)
+            temp_path = f.name
+
+        try:
+            config = load_clusters_config(temp_path)
+            cluster = config.clusters[0]
+            assert cluster.nodes is not None
+            assert len(cluster.nodes.login) == 2
+            assert cluster.get_ssh_host("login") == "login-01.example.com"
+            assert cluster.get_ssh_host("data") == "dc-01.example.com"
+        finally:
+            os.unlink(temp_path)
+
     def test_load_multiple_clusters(self):
         """Test loading multiple clusters from JSON."""
         config_data = {
@@ -287,6 +468,34 @@ class TestClusterManagerUnit:
         assert len(clusters) == 2
         assert clusters[0]["name"] == "a"
         assert clusters[1]["name"] == "b"
+
+    @pytest.mark.asyncio
+    async def test_manager_list_cluster_nodes(self):
+        """Test listing cluster nodes from manager."""
+        from slurm_mcp.cluster_manager import ClusterManager
+
+        config = MultiClusterConfig(
+            clusters=[
+                ClusterConfig(
+                    name="test",
+                    ssh_user="u",
+                    user_root="/home/u",
+                    nodes=ClusterNodes(
+                        login=["login-01.example.com", "login-02.example.com"],
+                        data=["dc-01.example.com"],
+                    ),
+                ),
+            ]
+        )
+
+        manager = ClusterManager(config)
+        await manager.initialize()
+
+        nodes = manager.list_cluster_nodes("test")
+        assert "login" in nodes
+        assert len(nodes["login"]) == 2
+        assert "data" in nodes
+        assert len(nodes["data"]) == 1
 
     @pytest.mark.asyncio
     async def test_manager_set_default_cluster(self):

@@ -19,24 +19,82 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 
+class ClusterNodes(BaseModel):
+    """Configuration for different node types within a cluster.
+    
+    Clusters typically have different nodes for different purposes:
+    - login: For job submission, light work (NO heavy data transfers, NO VS Code)
+    - data: For large data transfers (data copier nodes)
+    - vscode: For IDE sessions (VS Code, Cursor)
+    
+    The agent can freely choose which node to connect to based on the task.
+    """
+    
+    login: list[str] = Field(
+        default_factory=list,
+        description="Login node hostnames (for job submission, light work)"
+    )
+    data: list[str] = Field(
+        default_factory=list,
+        description="Data copier node hostnames (for large data transfers)"
+    )
+    vscode: list[str] = Field(
+        default_factory=list,
+        description="VS Code node hostnames (for IDE sessions)"
+    )
+    
+    def get_node(self, node_type: str, index: int = 0) -> Optional[str]:
+        """Get a node hostname by type and index.
+        
+        Args:
+            node_type: Type of node ('login', 'data', 'vscode')
+            index: Index of the node (default 0, first node)
+            
+        Returns:
+            Node hostname or None if not found.
+        """
+        nodes = getattr(self, node_type, [])
+        if nodes and 0 <= index < len(nodes):
+            return nodes[index]
+        return None
+    
+    def list_all_nodes(self) -> dict[str, list[str]]:
+        """List all configured nodes by type."""
+        return {
+            "login": self.login,
+            "data": self.data,
+            "vscode": self.vscode,
+        }
+
+
 class ClusterConfig(BaseModel):
     """Configuration for a single Slurm cluster.
     
     This model contains all settings needed to connect to and interact with
-    a single Slurm cluster.
+    a single Slurm cluster. Supports multiple node types for different purposes.
     """
     
     # Cluster identification
     name: str = Field(description="Unique cluster name/identifier")
     description: Optional[str] = Field(default=None, description="Human-readable description")
     
-    # SSH Connection Settings
-    ssh_host: str = Field(description="Remote Slurm login node hostname")
+    # SSH Connection Settings - legacy single-host mode
+    ssh_host: Optional[str] = Field(default=None, description="Default SSH host (legacy, use 'nodes' instead)")
     ssh_port: int = Field(default=22, description="SSH port")
     ssh_user: str = Field(description="SSH username")
     ssh_key_path: Optional[str] = Field(default=None, description="Path to SSH private key file")
     ssh_password: Optional[str] = Field(default=None, description="SSH password (for key passphrase or password auth)")
     ssh_known_hosts: Optional[str] = Field(default=None, description="Path to known_hosts file")
+    
+    # Multi-node configuration
+    nodes: Optional[ClusterNodes] = Field(
+        default=None,
+        description="Node hostnames by type (login, data, vscode)"
+    )
+    default_node_type: str = Field(
+        default="login",
+        description="Default node type to use when not specified"
+    )
     
     # Slurm Settings
     default_partition: Optional[str] = Field(default=None, description="Default partition for job submission")
@@ -99,6 +157,78 @@ class ClusterConfig(BaseModel):
             self.interactive_account = self.default_account
             
         return self
+    
+    def get_ssh_host(self, node: Optional[str] = None) -> str:
+        """Get SSH host for the specified node.
+        
+        Args:
+            node: Can be:
+                - None: Use default node type
+                - Node type: 'login', 'data', 'vscode' (uses first node of that type)
+                - Specific hostname: Used directly
+                - 'type:index' format: e.g., 'login:1' for second login node
+                
+        Returns:
+            SSH hostname to connect to.
+            
+        Raises:
+            ValueError: If no valid host can be determined.
+        """
+        # If no node specified, use default
+        if node is None:
+            node = self.default_node_type
+        
+        # If nodes are configured, try to resolve
+        if self.nodes:
+            # Check if it's a node type
+            if node in ('login', 'data', 'vscode'):
+                nodes_list = getattr(self.nodes, node, [])
+                if nodes_list:
+                    return nodes_list[0]  # Return first node of that type
+            
+            # Check for 'type:index' format
+            if ':' in node:
+                parts = node.split(':', 1)
+                if len(parts) == 2 and parts[0] in ('login', 'data', 'vscode'):
+                    node_type, idx_str = parts
+                    try:
+                        idx = int(idx_str)
+                        host = self.nodes.get_node(node_type, idx)
+                        if host:
+                            return host
+                    except ValueError:
+                        pass
+            
+            # Check if it's a direct hostname that matches any configured node
+            all_nodes = self.nodes.list_all_nodes()
+            for nodes_list in all_nodes.values():
+                if node in nodes_list:
+                    return node
+        
+        # If it looks like a hostname (contains a dot), use directly
+        if '.' in node:
+            return node
+        
+        # Fall back to legacy ssh_host
+        if self.ssh_host:
+            return self.ssh_host
+        
+        raise ValueError(
+            f"Cannot determine SSH host for node '{node}'. "
+            f"Configure 'nodes' or 'ssh_host' in cluster config."
+        )
+    
+    def list_available_nodes(self) -> dict[str, list[str]]:
+        """List all available nodes by type.
+        
+        Returns:
+            Dictionary mapping node types to list of hostnames.
+        """
+        if self.nodes:
+            return self.nodes.list_all_nodes()
+        elif self.ssh_host:
+            return {"default": [self.ssh_host]}
+        return {}
     
     @property
     def gpu_partition_list(self) -> list[str]:

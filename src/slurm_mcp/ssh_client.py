@@ -53,16 +53,32 @@ class SSHClient:
     and file operations over SSH using asyncssh.
     """
     
-    def __init__(self, settings: ConfigType):
+    def __init__(self, settings: ConfigType, hostname_override: Optional[str] = None):
         """Initialize SSH client with settings.
         
         Args:
             settings: Configuration settings containing SSH connection details.
                      Can be either Settings (legacy) or ClusterConfig (multi-cluster).
+            hostname_override: Optional hostname to connect to instead of settings.ssh_host.
+                             Used for multi-node cluster support.
         """
         self.settings = settings
+        self._hostname_override = hostname_override
         self._connection: Optional[asyncssh.SSHClientConnection] = None
         self._lock = asyncio.Lock()
+    
+    @property
+    def hostname(self) -> str:
+        """Get the hostname this client connects to."""
+        if self._hostname_override:
+            return self._hostname_override
+        # For ClusterConfig, try to get ssh_host or use get_ssh_host()
+        if hasattr(self.settings, 'get_ssh_host'):
+            try:
+                return self.settings.get_ssh_host()
+            except (ValueError, AttributeError):
+                pass
+        return getattr(self.settings, 'ssh_host', '') or ''
     
     @property
     def is_connected(self) -> bool:
@@ -80,8 +96,11 @@ class SSHClient:
                 return
             
             try:
+                # Use hostname property which respects hostname_override
+                host = self.hostname
+                
                 connect_kwargs: dict = {
-                    "host": self.settings.ssh_host,
+                    "host": host,
                     "port": self.settings.ssh_port,
                     "username": self.settings.ssh_user,
                 }
@@ -113,14 +132,14 @@ class SSHClient:
                     # Default: try system known_hosts, disable if not available
                     connect_kwargs["known_hosts"] = None
                 
-                logger.info(f"Connecting to {self.settings.ssh_user}@{self.settings.ssh_host}:{self.settings.ssh_port}")
+                logger.info(f"Connecting to {self.settings.ssh_user}@{host}:{self.settings.ssh_port}")
                 self._connection = await asyncssh.connect(**connect_kwargs)
-                logger.info("SSH connection established successfully")
+                logger.info(f"SSH connection established successfully to {host}")
                 
             except asyncssh.Error as e:
-                raise SSHConnectionError(f"Failed to connect to {self.settings.ssh_host}: {e}") from e
+                raise SSHConnectionError(f"Failed to connect to {self.hostname}: {e}") from e
             except Exception as e:
-                raise SSHConnectionError(f"Unexpected error connecting to {self.settings.ssh_host}: {e}") from e
+                raise SSHConnectionError(f"Unexpected error connecting to {self.hostname}: {e}") from e
     
     async def disconnect(self) -> None:
         """Close the SSH connection."""
