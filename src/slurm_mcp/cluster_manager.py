@@ -201,7 +201,7 @@ class ClusterManager:
         Args:
             cluster_name: Name of the cluster. If None, uses default cluster.
             node: Node specification. Can be:
-                - None: Use default node type (usually 'login')
+                - None: Use current node if connected, otherwise default node type
                 - Node type: 'login', 'data', 'vscode'
                 - Specific hostname
                 - 'type:index' format: e.g., 'login:1'
@@ -228,7 +228,15 @@ class ClusterManager:
         instances = self._clusters[cluster_name]
         config = instances.config
         
-        # Resolve the hostname
+        # If no node specified and we already have a current_node, keep using it
+        if node is None and instances.current_node is not None:
+            # Verify the current node is still connected
+            if instances.current_node in instances.node_connections:
+                node_conn = instances.node_connections[instances.current_node]
+                if node_conn.connected:
+                    return instances
+        
+        # Resolve the hostname (None -> default_node_type)
         hostname = config.get_ssh_host(node)
         
         # Check if we already have a connection to this node

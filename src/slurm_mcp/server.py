@@ -122,14 +122,47 @@ async def connect_cluster(
     cluster_name: Annotated[str, Field(description="Name of the cluster to connect to")],
     node: Annotated[Optional[str], Field(description="Node type ('login', 'data', 'vscode') or specific hostname")] = None,
 ) -> str:
-    """Explicitly connect to a cluster and optionally a specific node type."""
+    """Explicitly connect to a cluster and optionally a specific node type.
+    
+    This also sets the connected cluster as the default for subsequent operations.
+    Node types: 'login' (job submission), 'data' (data transfers), 'vscode' (IDE sessions).
+    """
     try:
         manager = await get_manager()
+        
+        # Get available nodes to provide helpful error message
+        available_nodes = manager.list_cluster_nodes(cluster_name)
+        
         hostname = await manager.connect_node(cluster_name, node)
-        return f"Connected to cluster '{cluster_name}' node '{hostname}'."
+        
+        # Set this cluster as the default so subsequent commands use it
+        manager.set_default_cluster(cluster_name)
+        
+        # Build informative response
+        node_info = []
+        for ntype, nodes in available_nodes.items():
+            if nodes:
+                node_info.append(f"{ntype}: {', '.join(nodes)}")
+        
+        return (
+            f"Connected to cluster '{cluster_name}' node '{hostname}'.\n"
+            f"This cluster is now the default for subsequent operations.\n"
+            f"Available nodes: {'; '.join(node_info) if node_info else 'none configured'}"
+        )
         
     except ValueError as e:
-        raise ToolError(str(e))
+        # Provide helpful error with available options
+        manager = await get_manager()
+        available_nodes = manager.list_cluster_nodes(cluster_name)
+        node_info = []
+        for ntype, nodes in available_nodes.items():
+            if nodes:
+                node_info.append(f"{ntype}: {', '.join(nodes)}")
+        
+        error_msg = str(e)
+        if node_info:
+            error_msg += f"\nAvailable nodes for '{cluster_name}': {'; '.join(node_info)}"
+        raise ToolError(error_msg)
     except Exception as e:
         raise ToolError(f"Failed to connect to cluster: {e}")
 

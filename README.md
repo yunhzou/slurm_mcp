@@ -76,10 +76,15 @@ The server looks for configuration in this order:
     {
       "name": "production",
       "description": "Main production HPC cluster",
-      "ssh_host": "login.production-hpc.example.com",
       "ssh_port": 22,
       "ssh_user": "your_username",
       "ssh_key_path": "~/.ssh/id_rsa",
+      "nodes": {
+        "login": ["login-01.production-hpc.example.com", "login-02.production-hpc.example.com"],
+        "data": ["dc-01.production-hpc.example.com"],
+        "vscode": ["vscode-01.production-hpc.example.com"]
+      },
+      "default_node_type": "login",
       "user_root": "/lustre/users/your_username",
       "default_account": "your_project",
       "default_partition": "batch",
@@ -91,15 +96,40 @@ The server looks for configuration in this order:
     {
       "name": "dev",
       "description": "Development cluster",
-      "ssh_host": "login.dev-cluster.example.com",
       "ssh_user": "your_username",
       "ssh_key_path": "~/.ssh/id_rsa_dev",
+      "nodes": {
+        "login": ["login.dev-cluster.example.com"]
+      },
       "user_root": "/home/your_username",
       "default_partition": "debug",
       "interactive_default_gpus": 1
     }
   ]
 }
+```
+
+#### Node Types
+
+Each cluster can have multiple node types for different purposes:
+
+| Node Type | Purpose | Example Use |
+|-----------|---------|-------------|
+| `login` | Job submission, light work | Default for most operations |
+| `data` | Large data transfers | Copying datasets, model checkpoints |
+| `vscode` | IDE/editor sessions | VS Code Remote, Cursor |
+
+Use the `connect_cluster` tool to connect to a specific node type:
+
+```python
+# Connect to data node for large transfers
+connect_cluster(cluster_name="production", node="data")
+
+# Connect to vscode node for IDE sessions  
+connect_cluster(cluster_name="production", node="vscode")
+
+# Connect to specific hostname
+connect_cluster(cluster_name="production", node="login-02.production-hpc.example.com")
 ```
 
 See `clusters.json.example` for a complete example with all available options.

@@ -535,3 +535,138 @@ class TestClusterManagerUnit:
         assert cluster_config is not None
         assert cluster_config.get_ssh_host() == "test.example.com"
         assert cluster_config.description == "Test cluster"
+
+
+class TestClusterManagerNodePreservation:
+    """Tests for preserving current node when not explicitly specified."""
+
+    @pytest.mark.asyncio
+    async def test_current_node_preserved_when_no_node_specified(self):
+        """Test that current_node is preserved when get_cluster_instances is called without node parameter.
+        
+        This tests the fix for the bug where connecting to a specific node type (e.g., 'data')
+        and then calling get_cluster_instances() without specifying a node would switch back
+        to the default node type (e.g., 'login').
+        """
+        from slurm_mcp.cluster_manager import ClusterManager, ClusterInstances
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        config = MultiClusterConfig(
+            default_cluster="test",
+            clusters=[
+                ClusterConfig(
+                    name="test",
+                    ssh_user="user",
+                    user_root="/home/user",
+                    nodes=ClusterNodes(
+                        login=["login.example.com"],
+                        data=["data.example.com"],
+                        vscode=["vscode.example.com"],
+                    ),
+                    default_node_type="login",
+                ),
+            ]
+        )
+
+        manager = ClusterManager(config)
+        await manager.initialize()
+
+        # Mock the SSH client to avoid actual connections
+        mock_ssh_client = MagicMock()
+        mock_ssh_client.connect = AsyncMock()
+        
+        with patch.object(manager, '_create_ssh_client', return_value=mock_ssh_client):
+            # First, connect to the 'data' node
+            instances1 = await manager.get_cluster_instances("test", node="data")
+            assert instances1.current_node == "data.example.com"
+            
+            # Now call get_cluster_instances without specifying a node
+            # This should preserve the current_node (data.example.com), not switch to login
+            instances2 = await manager.get_cluster_instances("test")
+            assert instances2.current_node == "data.example.com", \
+                f"Expected current_node to be preserved as 'data.example.com', but got '{instances2.current_node}'"
+
+    @pytest.mark.asyncio
+    async def test_explicit_node_overrides_current(self):
+        """Test that explicitly specifying a node switches to that node."""
+        from slurm_mcp.cluster_manager import ClusterManager
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        config = MultiClusterConfig(
+            default_cluster="test",
+            clusters=[
+                ClusterConfig(
+                    name="test",
+                    ssh_user="user",
+                    user_root="/home/user",
+                    nodes=ClusterNodes(
+                        login=["login.example.com"],
+                        data=["data.example.com"],
+                    ),
+                ),
+            ]
+        )
+
+        manager = ClusterManager(config)
+        await manager.initialize()
+
+        mock_ssh_client = MagicMock()
+        mock_ssh_client.connect = AsyncMock()
+        
+        with patch.object(manager, '_create_ssh_client', return_value=mock_ssh_client):
+            # Connect to data node
+            instances1 = await manager.get_cluster_instances("test", node="data")
+            assert instances1.current_node == "data.example.com"
+            
+            # Explicitly switch to login node
+            instances2 = await manager.get_cluster_instances("test", node="login")
+            assert instances2.current_node == "login.example.com"
+
+    @pytest.mark.asyncio
+    async def test_default_cluster_switch_preserves_other_cluster_nodes(self):
+        """Test that switching default cluster preserves node settings on other clusters."""
+        from slurm_mcp.cluster_manager import ClusterManager
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        config = MultiClusterConfig(
+            default_cluster="chicago",
+            clusters=[
+                ClusterConfig(
+                    name="chicago",
+                    ssh_user="user",
+                    user_root="/home/user",
+                    nodes=ClusterNodes(login=["chicago-login.example.com"]),
+                ),
+                ClusterConfig(
+                    name="tokyo",
+                    ssh_user="user",
+                    user_root="/home/user",
+                    nodes=ClusterNodes(
+                        login=["tokyo-login.example.com"],
+                        data=["tokyo-data.example.com"],
+                    ),
+                ),
+            ]
+        )
+
+        manager = ClusterManager(config)
+        await manager.initialize()
+
+        mock_ssh_client = MagicMock()
+        mock_ssh_client.connect = AsyncMock()
+        
+        with patch.object(manager, '_create_ssh_client', return_value=mock_ssh_client):
+            # Connect to tokyo data node
+            instances_tokyo = await manager.get_cluster_instances("tokyo", node="data")
+            assert instances_tokyo.current_node == "tokyo-data.example.com"
+            
+            # Switch default to tokyo
+            manager.set_default_cluster("tokyo")
+            
+            # Connect to chicago
+            instances_chicago = await manager.get_cluster_instances("chicago")
+            manager.set_default_cluster("chicago")
+            
+            # Verify tokyo still has data node as current
+            tokyo_instances = manager._clusters["tokyo"]
+            assert tokyo_instances.current_node == "tokyo-data.example.com"
