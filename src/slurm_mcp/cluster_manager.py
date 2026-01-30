@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from slurm_mcp.config import ClusterConfig, MultiClusterConfig, get_cluster_configs
+from slurm_mcp.config import ClusterConfig, MultiClusterConfig, load_clusters_config
 from slurm_mcp.directories import DirectoryManager
 from slurm_mcp.interactive import InteractiveSessionManager
 from slurm_mcp.profiles import ProfileManager
@@ -161,7 +161,7 @@ class ClusterManager:
             
             # Load configuration if not provided
             if self._config is None:
-                self._config = get_cluster_configs()
+                self._config = load_clusters_config()
             
             # Set default cluster
             self._default_cluster = self._config.default_cluster

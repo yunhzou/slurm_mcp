@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from slurm_mcp.config import ClusterConfig, MultiClusterConfig, Settings
+from slurm_mcp.config import ClusterConfig, ClusterNodes, MultiClusterConfig, load_clusters_config
 from slurm_mcp.cluster_manager import ClusterManager, get_cluster_manager
 from slurm_mcp.models import (
     ClusterDirectories,
@@ -20,9 +20,10 @@ from slurm_mcp.models import (
 
 __all__ = [
     # Config
-    "Settings",
     "ClusterConfig",
+    "ClusterNodes",
     "MultiClusterConfig",
+    "load_clusters_config",
     # Cluster Manager
     "ClusterManager",
     "get_cluster_manager",

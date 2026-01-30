@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
 
-from slurm_mcp.config import get_settings
+# removed get_settings import - uses settings fixture from conftest
 from slurm_mcp.models import CommandResult
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
 

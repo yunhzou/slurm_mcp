@@ -4,10 +4,15 @@
     {
       "name": "production",
       "description": "Main production HPC cluster with H100 GPUs",
-      "ssh_host": "login.production-hpc.example.com",
       "ssh_port": 22,
       "ssh_user": "your_username",
       "ssh_key_path": "~/.ssh/id_rsa",
+      "nodes": {
+        "login": ["login1.production-hpc.example.com", "login2.production-hpc.example.com"],
+        "data": ["data-copy.production-hpc.example.com"],
+        "vscode": ["vscode.production-hpc.example.com"]
+      },
+      "default_node_type": "login",
       "user_root": "/lustre/users/your_username",
       "default_account": "your_project",
       "default_partition": "batch",
@@ -24,10 +29,13 @@
     {
       "name": "dev",
       "description": "Development cluster for testing",
-      "ssh_host": "login.dev-cluster.example.com",
       "ssh_port": 22,
       "ssh_user": "your_username",
       "ssh_key_path": "~/.ssh/id_rsa_dev",
+      "nodes": {
+        "login": ["login.dev-cluster.example.com"]
+      },
+      "default_node_type": "login",
       "user_root": "/home/your_username",
       "default_account": "dev_project",
       "default_partition": "debug",
@@ -42,10 +50,14 @@
     {
       "name": "cloud",
       "description": "Cloud-based Slurm cluster",
-      "ssh_host": "slurm.cloud-provider.example.com",
       "ssh_port": 2222,
       "ssh_user": "cloud_user",
       "ssh_key_path": "~/.ssh/cloud_key",
+      "nodes": {
+        "login": ["slurm.cloud-provider.example.com"],
+        "data": ["slurm-data.cloud-provider.example.com"]
+      },
+      "default_node_type": "login",
       "user_root": "/shared/users/cloud_user",
       "default_account": "cloud_account",
       "default_partition": "standard",

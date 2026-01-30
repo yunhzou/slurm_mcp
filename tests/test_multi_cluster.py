@@ -10,7 +10,6 @@ from slurm_mcp.config import (
     ClusterNodes,
     MultiClusterConfig,
     load_clusters_config,
-    get_cluster_configs,
 )
 
 
@@ -56,18 +55,6 @@ class TestClusterNodes:
 class TestClusterConfig:
     """Tests for ClusterConfig model."""
 
-    def test_create_cluster_config(self):
-        """Test creating a cluster config."""
-        config = ClusterConfig(
-            name="test-cluster",
-            ssh_host="login.example.com",
-            ssh_user="testuser",
-            user_root="/home/testuser",
-        )
-        assert config.name == "test-cluster"
-        assert config.ssh_host == "login.example.com"
-        assert config.ssh_user == "testuser"
-
     def test_create_cluster_config_with_nodes(self):
         """Test creating cluster config with multiple nodes."""
         config = ClusterConfig(
@@ -82,17 +69,6 @@ class TestClusterConfig:
         )
         assert config.nodes is not None
         assert len(config.nodes.login) == 2
-
-    def test_get_ssh_host_legacy(self):
-        """Test get_ssh_host with legacy ssh_host setting."""
-        config = ClusterConfig(
-            name="test",
-            ssh_host="legacy.example.com",
-            ssh_user="user",
-            user_root="/home/user",
-        )
-        assert config.get_ssh_host() == "legacy.example.com"
-        assert config.get_ssh_host(None) == "legacy.example.com"
 
     def test_get_ssh_host_by_type(self):
         """Test get_ssh_host with node type."""
@@ -139,16 +115,27 @@ class TestClusterConfig:
         # Direct hostname that doesn't match but has a dot (treated as hostname)
         assert config.get_ssh_host("other.example.com") == "other.example.com"
 
-    def test_get_ssh_host_raises_when_no_host(self):
-        """Test get_ssh_host raises when no host can be determined."""
+    def test_get_ssh_host_raises_when_no_valid_node(self):
+        """Test get_ssh_host raises when requesting a non-existent node type."""
         config = ClusterConfig(
             name="test",
             ssh_user="user",
             user_root="/home/user",
-            # No ssh_host and no nodes configured
+            nodes=ClusterNodes(login=["login.example.com"]),  # Only login nodes configured
         )
+        # Requesting a non-existent type should raise
         with pytest.raises(ValueError, match="Cannot determine SSH host"):
             config.get_ssh_host("nonexistent")
+    
+    def test_create_cluster_requires_at_least_one_node(self):
+        """Test that creating a cluster without any nodes raises an error."""
+        with pytest.raises(ValueError, match="At least one node must be configured"):
+            ClusterConfig(
+                name="test",
+                ssh_user="user",
+                user_root="/home/user",
+                nodes=ClusterNodes(login=[]),  # Empty nodes
+            )
 
     def test_list_available_nodes(self):
         """Test listing available nodes."""
@@ -165,25 +152,13 @@ class TestClusterConfig:
         assert "login" in nodes
         assert len(nodes["login"]) == 2
 
-    def test_list_available_nodes_legacy(self):
-        """Test listing available nodes with legacy ssh_host."""
-        config = ClusterConfig(
-            name="test",
-            ssh_host="legacy.example.com",
-            ssh_user="user",
-            user_root="/home/user",
-        )
-        nodes = config.list_available_nodes()
-        assert "default" in nodes
-        assert nodes["default"] == ["legacy.example.com"]
-
     def test_default_directory_paths(self):
         """Test that directory paths are auto-generated from user_root."""
         config = ClusterConfig(
             name="test",
-            ssh_host="host",
             ssh_user="user",
             user_root="/home/user",
+            nodes=ClusterNodes(login=["host.example.com"]),
         )
         assert config.dir_datasets == "/home/user/data"
         assert config.dir_results == "/home/user/results"
@@ -194,9 +169,9 @@ class TestClusterConfig:
         """Test that explicit directory paths override defaults."""
         config = ClusterConfig(
             name="test",
-            ssh_host="host",
             ssh_user="user",
             user_root="/home/user",
+            nodes=ClusterNodes(login=["host.example.com"]),
             dir_datasets="/custom/datasets",
         )
         assert config.dir_datasets == "/custom/datasets"
@@ -206,9 +181,9 @@ class TestClusterConfig:
         """Test container mounts generation."""
         config = ClusterConfig(
             name="test",
-            ssh_host="host",
             ssh_user="user",
             user_root="/home/user",
+            nodes=ClusterNodes(login=["host.example.com"]),
         )
         mounts = config.get_container_mounts()
         assert "/home/user/data:/datasets" in mounts
@@ -218,9 +193,9 @@ class TestClusterConfig:
         """Test default SSH port."""
         config = ClusterConfig(
             name="test",
-            ssh_host="host",
             ssh_user="user",
             user_root="/home/user",
+            nodes=ClusterNodes(login=["host.example.com"]),
         )
         assert config.ssh_port == 22
 
@@ -228,9 +203,9 @@ class TestClusterConfig:
         """Test that interactive_account inherits from default_account."""
         config = ClusterConfig(
             name="test",
-            ssh_host="host",
             ssh_user="user",
             user_root="/home/user",
+            nodes=ClusterNodes(login=["host.example.com"]),
             default_account="my_project",
         )
         assert config.interactive_account == "my_project"
@@ -246,15 +221,15 @@ class TestMultiClusterConfig:
             clusters=[
                 ClusterConfig(
                     name="prod",
-                    ssh_host="prod.example.com",
                     ssh_user="user",
                     user_root="/home/user",
+                    nodes=ClusterNodes(login=["prod.example.com"]),
                 ),
                 ClusterConfig(
                     name="dev",
-                    ssh_host="dev.example.com",
                     ssh_user="user",
                     user_root="/scratch/user",
+                    nodes=ClusterNodes(login=["dev.example.com"]),
                 ),
             ],
         )
@@ -265,8 +240,8 @@ class TestMultiClusterConfig:
         """Test listing cluster names."""
         config = MultiClusterConfig(
             clusters=[
-                ClusterConfig(name="a", ssh_host="a", ssh_user="u", user_root="/a"),
-                ClusterConfig(name="b", ssh_host="b", ssh_user="u", user_root="/b"),
+                ClusterConfig(name="a", ssh_user="u", user_root="/a", nodes=ClusterNodes(login=["a.com"])),
+                ClusterConfig(name="b", ssh_user="u", user_root="/b", nodes=ClusterNodes(login=["b.com"])),
             ]
         )
         assert config.list_cluster_names() == ["a", "b"]
@@ -275,19 +250,19 @@ class TestMultiClusterConfig:
         """Test getting a cluster by name."""
         config = MultiClusterConfig(
             clusters=[
-                ClusterConfig(name="prod", ssh_host="prod.example.com", ssh_user="u", user_root="/p"),
-                ClusterConfig(name="dev", ssh_host="dev.example.com", ssh_user="u", user_root="/d"),
+                ClusterConfig(name="prod", ssh_user="u", user_root="/p", nodes=ClusterNodes(login=["prod.example.com"])),
+                ClusterConfig(name="dev", ssh_user="u", user_root="/d", nodes=ClusterNodes(login=["dev.example.com"])),
             ]
         )
         prod = config.get_cluster("prod")
         assert prod is not None
-        assert prod.ssh_host == "prod.example.com"
+        assert prod.get_ssh_host() == "prod.example.com"
 
     def test_get_cluster_returns_none_for_invalid(self):
         """Test getting a non-existent cluster returns None."""
         config = MultiClusterConfig(
             clusters=[
-                ClusterConfig(name="prod", ssh_host="prod", ssh_user="u", user_root="/p"),
+                ClusterConfig(name="prod", ssh_user="u", user_root="/p", nodes=ClusterNodes(login=["prod.com"])),
             ]
         )
         assert config.get_cluster("nonexistent") is None
@@ -296,8 +271,8 @@ class TestMultiClusterConfig:
         """Test that default_cluster is auto-set to first cluster if not specified."""
         config = MultiClusterConfig(
             clusters=[
-                ClusterConfig(name="first", ssh_host="f", ssh_user="u", user_root="/f"),
-                ClusterConfig(name="second", ssh_host="s", ssh_user="u", user_root="/s"),
+                ClusterConfig(name="first", ssh_user="u", user_root="/f", nodes=ClusterNodes(login=["f.com"])),
+                ClusterConfig(name="second", ssh_user="u", user_root="/s", nodes=ClusterNodes(login=["s.com"])),
             ]
         )
         assert config.default_cluster == "first"
@@ -307,8 +282,8 @@ class TestMultiClusterConfig:
         with pytest.raises(ValueError, match="Duplicate cluster names"):
             MultiClusterConfig(
                 clusters=[
-                    ClusterConfig(name="same", ssh_host="a", ssh_user="u", user_root="/a"),
-                    ClusterConfig(name="same", ssh_host="b", ssh_user="u", user_root="/b"),
+                    ClusterConfig(name="same", ssh_user="u", user_root="/a", nodes=ClusterNodes(login=["a.com"])),
+                    ClusterConfig(name="same", ssh_user="u", user_root="/b", nodes=ClusterNodes(login=["b.com"])),
                 ]
             )
 
@@ -318,7 +293,7 @@ class TestMultiClusterConfig:
             MultiClusterConfig(
                 default_cluster="nonexistent",
                 clusters=[
-                    ClusterConfig(name="prod", ssh_host="p", ssh_user="u", user_root="/p"),
+                    ClusterConfig(name="prod", ssh_user="u", user_root="/p", nodes=ClusterNodes(login=["p.com"])),
                 ]
             )
 
@@ -333,9 +308,11 @@ class TestLoadClustersConfig:
             "clusters": [
                 {
                     "name": "test",
-                    "ssh_host": "test.example.com",
                     "ssh_user": "testuser",
                     "user_root": "/home/testuser",
+                    "nodes": {
+                        "login": ["test.example.com"],
+                    },
                 }
             ],
         }
@@ -348,7 +325,7 @@ class TestLoadClustersConfig:
             config = load_clusters_config(temp_path)
             assert config.default_cluster == "test"
             assert len(config.clusters) == 1
-            assert config.clusters[0].ssh_host == "test.example.com"
+            assert config.clusters[0].get_ssh_host() == "test.example.com"
         finally:
             os.unlink(temp_path)
 
@@ -391,16 +368,16 @@ class TestLoadClustersConfig:
             "clusters": [
                 {
                     "name": "prod",
-                    "ssh_host": "prod.example.com",
                     "ssh_user": "user",
                     "user_root": "/lustre/users/user",
                     "default_account": "prod_account",
+                    "nodes": {"login": ["prod.example.com"]},
                 },
                 {
                     "name": "dev",
-                    "ssh_host": "dev.example.com",
                     "ssh_user": "user",
                     "user_root": "/home/user",
+                    "nodes": {"login": ["dev.example.com"]},
                 },
             ],
         }
@@ -413,7 +390,7 @@ class TestLoadClustersConfig:
             config = load_clusters_config(temp_path)
             assert len(config.clusters) == 2
             assert config.get_cluster("prod").default_account == "prod_account"
-            assert config.get_cluster("dev").ssh_host == "dev.example.com"
+            assert config.get_cluster("dev").get_ssh_host() == "dev.example.com"
         finally:
             os.unlink(temp_path)
 
@@ -436,9 +413,9 @@ class TestClusterManagerUnit:
             clusters=[
                 ClusterConfig(
                     name="test",
-                    ssh_host="test.example.com",
                     ssh_user="user",
                     user_root="/home/user",
+                    nodes=ClusterNodes(login=["test.example.com"]),
                 )
             ],
         )
@@ -456,8 +433,8 @@ class TestClusterManagerUnit:
 
         config = MultiClusterConfig(
             clusters=[
-                ClusterConfig(name="a", ssh_host="a.com", ssh_user="u", user_root="/a"),
-                ClusterConfig(name="b", ssh_host="b.com", ssh_user="u", user_root="/b"),
+                ClusterConfig(name="a", ssh_user="u", user_root="/a", nodes=ClusterNodes(login=["a.com"])),
+                ClusterConfig(name="b", ssh_user="u", user_root="/b", nodes=ClusterNodes(login=["b.com"])),
             ]
         )
 
@@ -505,8 +482,8 @@ class TestClusterManagerUnit:
         config = MultiClusterConfig(
             default_cluster="a",
             clusters=[
-                ClusterConfig(name="a", ssh_host="a.com", ssh_user="u", user_root="/a"),
-                ClusterConfig(name="b", ssh_host="b.com", ssh_user="u", user_root="/b"),
+                ClusterConfig(name="a", ssh_user="u", user_root="/a", nodes=ClusterNodes(login=["a.com"])),
+                ClusterConfig(name="b", ssh_user="u", user_root="/b", nodes=ClusterNodes(login=["b.com"])),
             ]
         )
 
@@ -524,7 +501,7 @@ class TestClusterManagerUnit:
 
         config = MultiClusterConfig(
             clusters=[
-                ClusterConfig(name="a", ssh_host="a.com", ssh_user="u", user_root="/a"),
+                ClusterConfig(name="a", ssh_user="u", user_root="/a", nodes=ClusterNodes(login=["a.com"])),
             ]
         )
 
@@ -543,9 +520,9 @@ class TestClusterManagerUnit:
             clusters=[
                 ClusterConfig(
                     name="test",
-                    ssh_host="test.example.com",
                     ssh_user="testuser",
                     user_root="/home/testuser",
+                    nodes=ClusterNodes(login=["test.example.com"]),
                     description="Test cluster",
                 ),
             ]
@@ -556,5 +533,5 @@ class TestClusterManagerUnit:
 
         cluster_config = manager.get_cluster_config("test")
         assert cluster_config is not None
-        assert cluster_config.ssh_host == "test.example.com"
+        assert cluster_config.get_ssh_host() == "test.example.com"
         assert cluster_config.description == "Test cluster"

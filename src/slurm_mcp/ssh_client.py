@@ -3,15 +3,12 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import asyncssh
 
-from slurm_mcp.config import ClusterConfig, Settings
+from slurm_mcp.config import ClusterConfig
 from slurm_mcp.models import CommandResult
-
-# Type alias to support both Settings and ClusterConfig
-ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +50,15 @@ class SSHClient:
     and file operations over SSH using asyncssh.
     """
     
-    def __init__(self, settings: ConfigType, hostname_override: Optional[str] = None):
-        """Initialize SSH client with settings.
+    def __init__(self, config: ClusterConfig, hostname_override: Optional[str] = None):
+        """Initialize SSH client with cluster configuration.
         
         Args:
-            settings: Configuration settings containing SSH connection details.
-                     Can be either Settings (legacy) or ClusterConfig (multi-cluster).
-            hostname_override: Optional hostname to connect to instead of settings.ssh_host.
+            config: Cluster configuration containing SSH connection details.
+            hostname_override: Optional hostname to connect to instead of resolving from config.
                              Used for multi-node cluster support.
         """
-        self.settings = settings
+        self.config = config
         self._hostname_override = hostname_override
         self._connection: Optional[asyncssh.SSHClientConnection] = None
         self._lock = asyncio.Lock()
@@ -72,13 +68,7 @@ class SSHClient:
         """Get the hostname this client connects to."""
         if self._hostname_override:
             return self._hostname_override
-        # For ClusterConfig, try to get ssh_host or use get_ssh_host()
-        if hasattr(self.settings, 'get_ssh_host'):
-            try:
-                return self.settings.get_ssh_host()
-            except (ValueError, AttributeError):
-                pass
-        return getattr(self.settings, 'ssh_host', '') or ''
+        return self.config.get_ssh_host()
     
     @property
     def is_connected(self) -> bool:
@@ -101,28 +91,28 @@ class SSHClient:
                 
                 connect_kwargs: dict = {
                     "host": host,
-                    "port": self.settings.ssh_port,
-                    "username": self.settings.ssh_user,
+                    "port": self.config.ssh_port,
+                    "username": self.config.ssh_user,
                 }
                 
                 # Handle SSH key authentication
-                if self.settings.ssh_key_path:
-                    key_path = Path(self.settings.ssh_key_path).expanduser()
+                if self.config.ssh_key_path:
+                    key_path = Path(self.config.ssh_key_path).expanduser()
                     if key_path.exists():
                         connect_kwargs["client_keys"] = [str(key_path)]
-                        if self.settings.ssh_password:
+                        if self.config.ssh_password:
                             # Password is passphrase for the key
-                            connect_kwargs["passphrase"] = self.settings.ssh_password
+                            connect_kwargs["passphrase"] = self.config.ssh_password
                     else:
                         logger.warning(f"SSH key not found at {key_path}, falling back to other auth methods")
                 
                 # Handle password authentication
-                if self.settings.ssh_password and "client_keys" not in connect_kwargs:
-                    connect_kwargs["password"] = self.settings.ssh_password
+                if self.config.ssh_password and "client_keys" not in connect_kwargs:
+                    connect_kwargs["password"] = self.config.ssh_password
                 
                 # Handle known_hosts
-                if self.settings.ssh_known_hosts:
-                    known_hosts_path = Path(self.settings.ssh_known_hosts).expanduser()
+                if self.config.ssh_known_hosts:
+                    known_hosts_path = Path(self.config.ssh_known_hosts).expanduser()
                     if known_hosts_path.exists():
                         connect_kwargs["known_hosts"] = str(known_hosts_path)
                     else:
@@ -132,7 +122,7 @@ class SSHClient:
                     # Default: try system known_hosts, disable if not available
                     connect_kwargs["known_hosts"] = None
                 
-                logger.info(f"Connecting to {self.settings.ssh_user}@{host}:{self.settings.ssh_port}")
+                logger.info(f"Connecting to {self.config.ssh_user}@{host}:{self.config.ssh_port}")
                 self._connection = await asyncssh.connect(**connect_kwargs)
                 logger.info(f"SSH connection established successfully to {host}")
                 
@@ -166,7 +156,7 @@ class SSHClient:
         
         Args:
             command: The command to execute.
-            timeout: Command timeout in seconds (uses settings default if not specified).
+            timeout: Command timeout in seconds (uses config default if not specified).
             check: If True, raise exception on non-zero return code.
             working_directory: Directory to run command in.
             
@@ -180,7 +170,7 @@ class SSHClient:
         await self.ensure_connected()
         
         if timeout is None:
-            timeout = self.settings.command_timeout
+            timeout = self.config.command_timeout
         
         # Wrap command with cd if working directory specified
         if working_directory:
@@ -237,7 +227,7 @@ class SSHClient:
         await self.ensure_connected()
         
         if timeout is None:
-            timeout = self.settings.command_timeout
+            timeout = self.config.command_timeout
         
         if working_directory:
             command = f"cd {working_directory} && {command}"
@@ -490,36 +480,3 @@ class SSHClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit."""
         await self.disconnect()
-
-
-# Global SSH client instance (lazy initialized)
-_ssh_client: Optional[SSHClient] = None
-
-
-def get_ssh_client(settings: Optional[Settings] = None) -> SSHClient:
-    """Get or create the global SSH client instance.
-    
-    Args:
-        settings: Optional settings to use. If not provided, uses default settings.
-        
-    Returns:
-        SSHClient instance.
-    """
-    global _ssh_client
-    
-    if _ssh_client is None:
-        if settings is None:
-            from slurm_mcp.config import get_settings
-            settings = get_settings()
-        _ssh_client = SSHClient(settings)
-    
-    return _ssh_client
-
-
-async def reset_ssh_client() -> None:
-    """Reset the global SSH client (disconnect and clear)."""
-    global _ssh_client
-    
-    if _ssh_client is not None:
-        await _ssh_client.disconnect()
-        _ssh_client = None

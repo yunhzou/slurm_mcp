@@ -1,0 +1,25 @@
+{
+  "default_cluster": "cs-oci-ord",
+  "clusters": [
+    {
+      "name": "cs-oci-ord",
+      "description": "NVIDIA Slurm cluster in OCI Chicago/Ord region",
+      "ssh_host": "cs-oci-ord-login-02.nvidia.com",
+      "ssh_port": 22,
+      "ssh_user": "yunhengz",
+      "user_root": "/lustre/fsw/portfolios/nvr/users/yunhengz",
+      "gpfs_root": "/lustre",
+      "command_timeout": 60
+    },
+    {
+      "name": "oci-nrt-cs-001",
+      "description": "NVIDIA Slurm cluster in OCI Narita, Japan region",
+      "ssh_host": "oci-nrt-cs-001-login-02.nvidia.com",
+      "ssh_port": 22,
+      "ssh_user": "yunhengz",
+      "user_root": "/lustre/fsw/portfolios/nvr/users/yunhengz",
+      "gpfs_root": "/lustre",
+      "command_timeout": 60
+    }
+  ]
+}

@@ -4,14 +4,11 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
-from slurm_mcp.config import ClusterConfig, Settings
+from slurm_mcp.config import ClusterConfig
 from slurm_mcp.models import InteractiveProfile
 from slurm_mcp.ssh_client import SSHClient
-
-# Type alias to support both Settings and ClusterConfig
-ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +56,16 @@ class ProfileManager:
     Profiles are stored as JSON on the remote cluster.
     """
     
-    def __init__(self, ssh_client: SSHClient, settings: ConfigType):
+    def __init__(self, ssh_client: SSHClient, config: ClusterConfig):
         """Initialize profile manager.
         
         Args:
             ssh_client: SSH client for remote file operations.
-            settings: Configuration settings (Settings or ClusterConfig).
+            config: Cluster configuration.
         """
         self.ssh = ssh_client
-        self.settings = settings
-        self._profiles_path = settings.profiles_path
+        self.config = config
+        self._profiles_path = config.profiles_path
         self._profiles: dict[str, InteractiveProfile] = {}
         self._loaded = False
     
@@ -117,15 +114,15 @@ class ProfileManager:
     async def _create_default_profiles(self) -> None:
         """Create default profiles."""
         for profile in DEFAULT_PROFILES:
-            # Apply settings defaults
+            # Apply config defaults
             if not profile.partition:
-                profile.partition = self.settings.interactive_partition
+                profile.partition = self.config.interactive_partition
             if not profile.account:
-                profile.account = self.settings.interactive_account
+                profile.account = self.config.interactive_account
             if not profile.container_image:
-                profile.container_image = self.settings.default_image
+                profile.container_image = self.config.default_image
             if not profile.container_mounts:
-                profile.container_mounts = self.settings.get_container_mounts()
+                profile.container_mounts = self.config.get_container_mounts()
             
             profile.created_at = datetime.now()
             profile.updated_at = datetime.now()
@@ -175,11 +172,11 @@ class ProfileManager:
         
         # Apply defaults if not set
         if not profile.partition:
-            profile.partition = self.settings.interactive_partition
+            profile.partition = self.config.interactive_partition
         if not profile.account:
-            profile.account = self.settings.interactive_account
+            profile.account = self.config.interactive_account
         if not profile.container_mounts:
-            profile.container_mounts = self.settings.get_container_mounts()
+            profile.container_mounts = self.config.get_container_mounts()
         
         self._profiles[profile.name] = profile
         await self._save_profiles()
@@ -257,36 +254,3 @@ class ProfileManager:
         
         await self._save_profiles()
         return profile
-
-
-# Global profile manager instance
-_profile_manager: Optional[ProfileManager] = None
-
-
-def get_profile_manager(
-    ssh_client: Optional[SSHClient] = None,
-    settings: Optional[Settings] = None,
-) -> ProfileManager:
-    """Get or create the global profile manager instance.
-    
-    Args:
-        ssh_client: SSH client (required on first call).
-        settings: Settings (required on first call).
-        
-    Returns:
-        ProfileManager instance.
-    """
-    global _profile_manager
-    
-    if _profile_manager is None:
-        if ssh_client is None or settings is None:
-            raise ValueError("ssh_client and settings required on first call")
-        _profile_manager = ProfileManager(ssh_client, settings)
-    
-    return _profile_manager
-
-
-def reset_profile_manager() -> None:
-    """Reset the global profile manager."""
-    global _profile_manager
-    _profile_manager = None

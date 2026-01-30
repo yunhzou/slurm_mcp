@@ -1,12 +1,11 @@
 """Wrapper for Slurm commands executed via SSH."""
 
-import json
 import logging
 import re
 from datetime import datetime
-from typing import Optional, Union
+from typing import Optional
 
-from slurm_mcp.config import ClusterConfig, Settings
+from slurm_mcp.config import ClusterConfig
 from slurm_mcp.models import (
     CommandResult,
     ContainerImage,
@@ -17,9 +16,6 @@ from slurm_mcp.models import (
     PartitionInfo,
 )
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
-
-# Type alias to support both Settings and ClusterConfig
-ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -166,15 +162,15 @@ def _parse_gres(gres_str: str, features: str = "") -> list[GPUInfo]:
 class SlurmCommands:
     """Wrapper for Slurm commands executed via SSH."""
     
-    def __init__(self, ssh_client: SSHClient, settings: ConfigType):
+    def __init__(self, ssh_client: SSHClient, config: ClusterConfig):
         """Initialize Slurm commands wrapper.
         
         Args:
             ssh_client: SSH client for remote execution.
-            settings: Configuration settings (Settings or ClusterConfig).
+            config: Cluster configuration.
         """
         self.ssh = ssh_client
-        self.settings = settings
+        self.config = config
     
     # =========================================================================
     # Cluster Status Commands
@@ -679,9 +675,9 @@ class SlurmCommands:
         """
         # Generate the script
         script_content = job.generate_sbatch_script(
-            default_partition=self.settings.default_partition,
-            default_account=self.settings.default_account,
-            default_mounts=self.settings.get_container_mounts(),
+            default_partition=self.config.default_partition,
+            default_account=self.config.default_account,
+            default_mounts=self.config.get_container_mounts(),
         )
         
         # Write script to temporary file
@@ -808,7 +804,7 @@ class SlurmCommands:
         Returns:
             List of ContainerImage objects.
         """
-        search_dir = directory or self.settings.image_dir
+        search_dir = directory or self.config.image_dir
         if not search_dir:
             return []
         
@@ -906,10 +902,10 @@ class SlurmCommands:
         # Build srun command
         cmd = "srun"
         
-        partition = partition or self.settings.interactive_partition
-        account = account or self.settings.interactive_account
-        time_limit = time_limit or self.settings.interactive_default_time
-        gpus_per_node = gpus_per_node if gpus_per_node is not None else self.settings.interactive_default_gpus
+        partition = partition or self.config.interactive_partition
+        account = account or self.config.interactive_account
+        time_limit = time_limit or self.config.interactive_default_time
+        gpus_per_node = gpus_per_node if gpus_per_node is not None else self.config.interactive_default_gpus
         
         if account:
             cmd += f" -A {account}"
@@ -923,7 +919,7 @@ class SlurmCommands:
         if container_image:
             cmd += f" --container-image={container_image}"
             
-            mounts = container_mounts or self.settings.get_container_mounts()
+            mounts = container_mounts or self.config.get_container_mounts()
             if mounts:
                 cmd += f" --container-mounts={mounts}"
             
@@ -940,7 +936,7 @@ class SlurmCommands:
         cmd += f" bash -c '{escaped_command}'"
         
         # Use longer timeout for interactive commands
-        exec_timeout = timeout or max(300, self.settings.command_timeout)
+        exec_timeout = timeout or max(300, self.config.command_timeout)
         
         return await self.ssh.execute(cmd, timeout=exec_timeout)
     
@@ -971,10 +967,10 @@ class SlurmCommands:
         """
         cmd = "salloc --no-shell"
         
-        partition = partition or self.settings.interactive_partition
-        account = account or self.settings.interactive_account
-        time_limit = time_limit or self.settings.interactive_default_time
-        gpus_per_node = gpus_per_node if gpus_per_node is not None else self.settings.interactive_default_gpus
+        partition = partition or self.config.interactive_partition
+        account = account or self.config.interactive_account
+        time_limit = time_limit or self.config.interactive_default_time
+        gpus_per_node = gpus_per_node if gpus_per_node is not None else self.config.interactive_default_gpus
         
         if account:
             cmd += f" -A {account}"
@@ -1031,7 +1027,7 @@ class SlurmCommands:
         if container_image:
             cmd += f" --container-image={container_image}"
             
-            mounts = container_mounts or self.settings.get_container_mounts()
+            mounts = container_mounts or self.config.get_container_mounts()
             if mounts:
                 cmd += f" --container-mounts={mounts}"
             
@@ -1047,6 +1043,6 @@ class SlurmCommands:
         escaped_command = _escape_for_single_quotes(full_command)
         cmd += f" bash -c '{escaped_command}'"
         
-        exec_timeout = timeout or max(300, self.settings.command_timeout)
+        exec_timeout = timeout or max(300, self.config.command_timeout)
         
         return await self.ssh.execute(cmd, timeout=exec_timeout)

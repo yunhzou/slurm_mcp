@@ -17,11 +17,21 @@ from slurm_mcp.cluster_manager import ClusterManager, get_cluster_manager
 from slurm_mcp.models import InteractiveProfile, JobSubmission
 from slurm_mcp.ssh_client import SSHCommandError
 
-# Configure logging
+
+def main():
+    """Main entry point for running the MCP server."""
+    mcp.run(transport="stdio", show_banner=False)
+
+
+# Configure logging - use WARNING level to avoid interfering with MCP stdio transport
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Suppress noisy loggers
+logging.getLogger("docket").setLevel(logging.ERROR)
+logging.getLogger("fastmcp").setLevel(logging.ERROR)
+logging.getLogger("mcp").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 # Create MCP server
@@ -66,12 +76,23 @@ async def list_clusters() -> str:
         
         for c in clusters:
             default_marker = " (default)" if c["is_default"] else ""
-            status = "connected" if c["connected"] else "not connected"
+            connected_count = len(c["connected_nodes"])
+            status = f"{connected_count} node(s) connected" if connected_count > 0 else "not connected"
             lines.append(f"  {c['name']}{default_marker}")
-            lines.append(f"    Host: {c['ssh_user']}@{c['ssh_host']}")
+            lines.append(f"    User: {c['ssh_user']}")
             if c["description"]:
                 lines.append(f"    Description: {c['description']}")
             lines.append(f"    Status: {status}")
+            # Show available nodes by type
+            available = c["available_nodes"]
+            node_types = []
+            for ntype, nodes in available.items():
+                if nodes:
+                    node_types.append(f"{ntype}: {len(nodes)}")
+            if node_types:
+                lines.append(f"    Nodes: {', '.join(node_types)}")
+            if c["current_node"]:
+                lines.append(f"    Current Node: {c['current_node']}")
             lines.append("")
         
         return "\n".join(lines)
@@ -99,12 +120,13 @@ async def set_default_cluster(
 @mcp.tool()
 async def connect_cluster(
     cluster_name: Annotated[str, Field(description="Name of the cluster to connect to")],
+    node: Annotated[Optional[str], Field(description="Node type ('login', 'data', 'vscode') or specific hostname")] = None,
 ) -> str:
-    """Explicitly connect to a cluster."""
+    """Explicitly connect to a cluster and optionally a specific node type."""
     try:
         manager = await get_manager()
-        await manager.connect_cluster(cluster_name)
-        return f"Connected to cluster '{cluster_name}'."
+        hostname = await manager.connect_node(cluster_name, node)
+        return f"Connected to cluster '{cluster_name}' node '{hostname}'."
         
     except ValueError as e:
         raise ToolError(str(e))
@@ -1291,3 +1313,7 @@ async def run_shell_command(
 
 # Note: FastMCP uses lifespan context manager instead of on_event decorators.
 # The initialization happens lazily when tools are first called via get_manager().
+
+
+if __name__ == "__main__":
+    main()

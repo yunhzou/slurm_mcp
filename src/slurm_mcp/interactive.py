@@ -3,16 +3,13 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta
-from typing import Optional, Union
+from datetime import datetime
+from typing import Optional
 
-from slurm_mcp.config import ClusterConfig, Settings
+from slurm_mcp.config import ClusterConfig
 from slurm_mcp.models import CommandResult, InteractiveSession
 from slurm_mcp.slurm_commands import SlurmCommands
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
-
-# Type alias to support both Settings and ClusterConfig
-ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -28,18 +25,18 @@ class InteractiveSessionManager:
         self,
         ssh_client: SSHClient,
         slurm: SlurmCommands,
-        settings: ConfigType,
+        config: ClusterConfig,
     ):
         """Initialize the interactive session manager.
         
         Args:
             ssh_client: SSH client for remote operations.
             slurm: Slurm commands wrapper.
-            settings: Configuration settings (Settings or ClusterConfig).
+            config: Cluster configuration.
         """
         self.ssh = ssh_client
         self.slurm = slurm
-        self.settings = settings
+        self.config = config
         self._sessions: dict[str, InteractiveSession] = {}
         self._lock = asyncio.Lock()
     
@@ -77,13 +74,13 @@ class InteractiveSessionManager:
         session_id = str(uuid.uuid4())[:8]
         job_name = f"mcp-session-{session_id}"
         
-        # Use defaults from settings if not provided
-        partition = partition or self.settings.interactive_partition
-        account = account or self.settings.interactive_account
-        time_limit = time_limit or self.settings.interactive_default_time
+        # Use defaults from config if not provided
+        partition = partition or self.config.interactive_partition
+        account = account or self.config.interactive_account
+        time_limit = time_limit or self.config.interactive_default_time
         if gpus_per_node is None:
-            gpus_per_node = self.settings.interactive_default_gpus
-        container_mounts = container_mounts or self.settings.get_container_mounts()
+            gpus_per_node = self.config.interactive_default_gpus
+        container_mounts = container_mounts or self.config.get_container_mounts()
         
         logger.info(f"Starting interactive session {session_id} on partition {partition}")
         
@@ -266,7 +263,7 @@ class InteractiveSessionManager:
             elif session.last_command_time:
                 # Check for idle timeout
                 idle_seconds = (datetime.now() - session.last_command_time).total_seconds()
-                if idle_seconds > self.settings.interactive_session_timeout:
+                if idle_seconds > self.config.interactive_session_timeout:
                     logger.info(f"Session {session_id} timed out after {idle_seconds}s idle")
                     await self.end_session(session_id)
                     cleaned += 1
@@ -321,46 +318,3 @@ class InteractiveSessionManager:
             working_directory=working_directory,
             timeout=timeout,
         )
-
-
-# Global session manager instance
-_session_manager: Optional[InteractiveSessionManager] = None
-
-
-def get_session_manager(
-    ssh_client: Optional[SSHClient] = None,
-    slurm: Optional[SlurmCommands] = None,
-    settings: Optional[Settings] = None,
-) -> InteractiveSessionManager:
-    """Get or create the global session manager instance.
-    
-    Args:
-        ssh_client: SSH client (required on first call).
-        slurm: Slurm commands wrapper (required on first call).
-        settings: Settings (required on first call).
-        
-    Returns:
-        InteractiveSessionManager instance.
-    """
-    global _session_manager
-    
-    if _session_manager is None:
-        if ssh_client is None or slurm is None or settings is None:
-            raise ValueError("ssh_client, slurm, and settings required on first call")
-        _session_manager = InteractiveSessionManager(ssh_client, slurm, settings)
-    
-    return _session_manager
-
-
-async def reset_session_manager() -> None:
-    """Reset the global session manager."""
-    global _session_manager
-    
-    if _session_manager is not None:
-        # End all active sessions
-        for session_id in list(_session_manager._sessions.keys()):
-            try:
-                await _session_manager.end_session(session_id)
-            except Exception:
-                pass
-        _session_manager = None

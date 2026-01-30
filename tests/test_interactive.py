@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
 
-from slurm_mcp.config import get_settings
+# removed get_settings import - uses settings fixture from conftest
 from slurm_mcp.models import InteractiveSession, InteractiveProfile
 from slurm_mcp.ssh_client import SSHClient
 from slurm_mcp.slurm_commands import SlurmCommands

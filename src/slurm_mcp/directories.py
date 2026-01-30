@@ -5,14 +5,11 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
-from slurm_mcp.config import ClusterConfig, Settings
+from slurm_mcp.config import ClusterConfig
 from slurm_mcp.models import ClusterDirectories, DirectoryListing, FileInfo
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
-
-# Type alias to support both Settings and ClusterConfig
-ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +70,15 @@ class DirectoryManager:
         "images": "image_dir",
     }
     
-    def __init__(self, ssh_client: SSHClient, settings: ConfigType):
+    def __init__(self, ssh_client: SSHClient, config: ClusterConfig):
         """Initialize directory manager.
         
         Args:
             ssh_client: SSH client for remote operations.
-            settings: Configuration settings (Settings or ClusterConfig).
+            config: Cluster configuration.
         """
         self.ssh = ssh_client
-        self.settings = settings
+        self.config = config
     
     def get_cluster_directories(self) -> ClusterDirectories:
         """Get the configured cluster directory structure.
@@ -90,17 +87,17 @@ class DirectoryManager:
             ClusterDirectories object with all paths.
         """
         return ClusterDirectories(
-            user_root=self.settings.user_root,
-            datasets=self.settings.dir_datasets or "",
-            results=self.settings.dir_results or "",
-            models=self.settings.dir_models or "",
-            logs=self.settings.dir_logs or "",
-            projects=self.settings.dir_projects,
-            scratch=self.settings.dir_scratch,
-            home=self.settings.dir_home,
-            container_root=self.settings.dir_container_root,
-            gpfs_root=self.settings.gpfs_root,
-            images=self.settings.image_dir,
+            user_root=self.config.user_root,
+            datasets=self.config.dir_datasets or "",
+            results=self.config.dir_results or "",
+            models=self.config.dir_models or "",
+            logs=self.config.dir_logs or "",
+            projects=self.config.dir_projects,
+            scratch=self.config.dir_scratch,
+            home=self.config.dir_home,
+            container_root=self.config.dir_container_root,
+            gpfs_root=self.config.gpfs_root,
+            images=self.config.image_dir,
         )
     
     def resolve_path(
@@ -126,14 +123,14 @@ class DirectoryManager:
         
         # If no directory type, use user_root as base
         if not directory_type:
-            base = self.settings.user_root
+            base = self.config.user_root
         else:
-            # Get base directory from settings
+            # Get base directory from config
             if directory_type not in self.DIRECTORY_TYPES:
                 raise ValueError(f"Invalid directory type: {directory_type}")
             
             attr_name = self.DIRECTORY_TYPES[directory_type]
-            base = getattr(self.settings, attr_name)
+            base = getattr(self.config, attr_name)
             
             if not base:
                 raise ValueError(f"Directory type '{directory_type}' is not configured")
@@ -163,8 +160,8 @@ class DirectoryManager:
         
         # Ensure path is within allowed directories
         allowed_roots = [
-            self.settings.user_root,
-            self.settings.gpfs_root,
+            self.config.user_root,
+            self.config.gpfs_root,
             "/tmp",
         ]
         allowed_roots = [r for r in allowed_roots if r]
@@ -518,7 +515,7 @@ class DirectoryManager:
         elif directory_type:
             search_path = self.resolve_path("", directory_type)
         else:
-            search_path = self.settings.user_root
+            search_path = self.config.user_root
         
         # Build find command (quote path for spaces/special chars)
         quoted_path = _quote_path(search_path)
@@ -601,11 +598,11 @@ class DirectoryManager:
         
         # Extra validation for destructive operation
         if full_path in [
-            self.settings.user_root,
-            self.settings.gpfs_root,
-            self.settings.dir_datasets,
-            self.settings.dir_models,
-            self.settings.dir_results,
+            self.config.user_root,
+            self.config.gpfs_root,
+            self.config.dir_datasets,
+            self.config.dir_models,
+            self.config.dir_results,
         ]:
             raise ValueError(f"Cannot delete root directory: {full_path}")
         
@@ -640,7 +637,7 @@ class DirectoryManager:
             # Check all configured directories
             paths = {}
             for dtype, attr in self.DIRECTORY_TYPES.items():
-                dir_path = getattr(self.settings, attr)
+                dir_path = getattr(self.config, attr)
                 if dir_path:
                     paths[dtype] = dir_path
         
@@ -683,36 +680,3 @@ class DirectoryManager:
                         }
         
         return usage
-
-
-# Global directory manager instance
-_directory_manager: Optional[DirectoryManager] = None
-
-
-def get_directory_manager(
-    ssh_client: Optional[SSHClient] = None,
-    settings: Optional[Settings] = None,
-) -> DirectoryManager:
-    """Get or create the global directory manager instance.
-    
-    Args:
-        ssh_client: SSH client (required on first call).
-        settings: Settings (required on first call).
-        
-        Returns:
-        DirectoryManager instance.
-    """
-    global _directory_manager
-    
-    if _directory_manager is None:
-        if ssh_client is None or settings is None:
-            raise ValueError("ssh_client and settings required on first call")
-        _directory_manager = DirectoryManager(ssh_client, settings)
-    
-    return _directory_manager
-
-
-def reset_directory_manager() -> None:
-    """Reset the global directory manager."""
-    global _directory_manager
-    _directory_manager = None
