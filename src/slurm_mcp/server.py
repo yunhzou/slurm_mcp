@@ -1289,23 +1289,5 @@ async def run_shell_command(
 # Server Lifecycle
 # =============================================================================
 
-@mcp.on_event("startup")
-async def on_startup():
-    """Initialize on server startup."""
-    logger.info("Slurm MCP server starting...")
-    try:
-        manager = await get_manager()
-        clusters = manager.list_clusters()
-        logger.info(f"Configured {len(clusters)} cluster(s): {[c['name'] for c in clusters]}")
-    except Exception as e:
-        logger.error(f"Failed to initialize cluster manager: {e}")
-
-
-@mcp.on_event("shutdown")
-async def on_shutdown():
-    """Cleanup on server shutdown."""
-    global _manager
-    logger.info("Slurm MCP server shutting down...")
-    if _manager is not None:
-        await _manager.disconnect_all()
-        _manager = None
+# Note: FastMCP uses lifespan context manager instead of on_event decorators.
+# The initialization happens lazily when tools are first called via get_manager().
