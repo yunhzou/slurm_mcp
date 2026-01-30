@@ -4,9 +4,9 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
-from slurm_mcp.config import Settings
+from slurm_mcp.config import ClusterConfig, Settings
 from slurm_mcp.models import (
     CommandResult,
     ContainerImage,
@@ -17,6 +17,9 @@ from slurm_mcp.models import (
     PartitionInfo,
 )
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
+
+# Type alias to support both Settings and ClusterConfig
+ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -163,12 +166,12 @@ def _parse_gres(gres_str: str, features: str = "") -> list[GPUInfo]:
 class SlurmCommands:
     """Wrapper for Slurm commands executed via SSH."""
     
-    def __init__(self, ssh_client: SSHClient, settings: Settings):
+    def __init__(self, ssh_client: SSHClient, settings: ConfigType):
         """Initialize Slurm commands wrapper.
         
         Args:
             ssh_client: SSH client for remote execution.
-            settings: Configuration settings.
+            settings: Configuration settings (Settings or ClusterConfig).
         """
         self.ssh = ssh_client
         self.settings = settings

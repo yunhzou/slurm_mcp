@@ -1,4 +1,9 @@
-"""Main MCP server for Slurm cluster management."""
+"""Main MCP server for Slurm cluster management.
+
+This server supports multiple Slurm clusters via JSON configuration.
+Each tool accepts an optional 'cluster' parameter to specify which
+cluster to operate on. If not specified, the default cluster is used.
+"""
 
 import asyncio
 import logging
@@ -8,13 +13,9 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from slurm_mcp.config import Settings, get_settings
-from slurm_mcp.directories import DirectoryManager, get_directory_manager
-from slurm_mcp.interactive import InteractiveSessionManager, get_session_manager
+from slurm_mcp.cluster_manager import ClusterManager, get_cluster_manager
 from slurm_mcp.models import InteractiveProfile, JobSubmission
-from slurm_mcp.profiles import ProfileManager, get_profile_manager
-from slurm_mcp.slurm_commands import SlurmCommands
-from slurm_mcp.ssh_client import SSHClient, SSHCommandError, get_ssh_client
+from slurm_mcp.ssh_client import SSHCommandError
 
 # Configure logging
 logging.basicConfig(
@@ -26,42 +27,89 @@ logger = logging.getLogger(__name__)
 # Create MCP server
 mcp = FastMCP(
     "slurm-mcp",
-    instructions="MCP server for remote Slurm cluster management via SSH",
+    instructions="MCP server for remote Slurm cluster management via SSH. Supports multiple clusters.",
 )
 
-# Global instances (initialized on startup)
-_settings: Optional[Settings] = None
-_ssh: Optional[SSHClient] = None
-_slurm: Optional[SlurmCommands] = None
-_sessions: Optional[InteractiveSessionManager] = None
-_profiles: Optional[ProfileManager] = None
-_directories: Optional[DirectoryManager] = None
+# Global cluster manager (initialized on first use)
+_manager: Optional[ClusterManager] = None
 
 
-async def get_instances():
-    """Get or initialize global instances."""
-    global _settings, _ssh, _slurm, _sessions, _profiles, _directories
-    
-    if _settings is None:
-        _settings = get_settings()
-    
-    if _ssh is None:
-        _ssh = get_ssh_client(_settings)
-        await _ssh.connect()
-    
-    if _slurm is None:
-        _slurm = SlurmCommands(_ssh, _settings)
-    
-    if _sessions is None:
-        _sessions = get_session_manager(_ssh, _slurm, _settings)
-    
-    if _profiles is None:
-        _profiles = get_profile_manager(_ssh, _settings)
-    
-    if _directories is None:
-        _directories = get_directory_manager(_ssh, _settings)
-    
-    return _settings, _ssh, _slurm, _sessions, _profiles, _directories
+async def get_manager() -> ClusterManager:
+    """Get the global cluster manager instance."""
+    global _manager
+    if _manager is None:
+        _manager = await get_cluster_manager()
+    return _manager
+
+
+async def get_cluster_instances(cluster: Optional[str] = None):
+    """Get instances for the specified cluster (or default)."""
+    manager = await get_manager()
+    return await manager.get_cluster_instances(cluster)
+
+
+# =============================================================================
+# Cluster Management Tools
+# =============================================================================
+
+@mcp.tool()
+async def list_clusters() -> str:
+    """List all configured Slurm clusters and their connection status."""
+    try:
+        manager = await get_manager()
+        clusters = manager.list_clusters()
+        
+        if not clusters:
+            return "No clusters configured."
+        
+        lines = [f"Configured Clusters ({len(clusters)}):", ""]
+        
+        for c in clusters:
+            default_marker = " (default)" if c["is_default"] else ""
+            status = "connected" if c["connected"] else "not connected"
+            lines.append(f"  {c['name']}{default_marker}")
+            lines.append(f"    Host: {c['ssh_user']}@{c['ssh_host']}")
+            if c["description"]:
+                lines.append(f"    Description: {c['description']}")
+            lines.append(f"    Status: {status}")
+            lines.append("")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        raise ToolError(f"Failed to list clusters: {e}")
+
+
+@mcp.tool()
+async def set_default_cluster(
+    cluster_name: Annotated[str, Field(description="Name of the cluster to set as default")],
+) -> str:
+    """Set the default cluster for subsequent operations."""
+    try:
+        manager = await get_manager()
+        manager.set_default_cluster(cluster_name)
+        return f"Default cluster set to '{cluster_name}'."
+        
+    except ValueError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        raise ToolError(f"Failed to set default cluster: {e}")
+
+
+@mcp.tool()
+async def connect_cluster(
+    cluster_name: Annotated[str, Field(description="Name of the cluster to connect to")],
+) -> str:
+    """Explicitly connect to a cluster."""
+    try:
+        manager = await get_manager()
+        await manager.connect_cluster(cluster_name)
+        return f"Connected to cluster '{cluster_name}'."
+        
+    except ValueError as e:
+        raise ToolError(str(e))
+    except Exception as e:
+        raise ToolError(f"Failed to connect to cluster: {e}")
 
 
 # =============================================================================
@@ -71,10 +119,12 @@ async def get_instances():
 @mcp.tool()
 async def get_cluster_status(
     partition: Annotated[Optional[str], Field(description="Filter by partition name")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get the current status of the Slurm cluster including partitions and node availability."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         partitions = await slurm.get_partitions()
         
@@ -84,7 +134,8 @@ async def get_cluster_status(
         if not partitions:
             return "No partitions found."
         
-        lines = ["Cluster Status:", ""]
+        cluster_name = instances.config.name
+        lines = [f"Cluster Status ({cluster_name}):", ""]
         
         for p in partitions:
             default_marker = " (default)" if p.default else ""
@@ -108,10 +159,12 @@ async def get_cluster_status(
 @mcp.tool()
 async def get_partition_info(
     partition_name: Annotated[Optional[str], Field(description="Specific partition name, or None for all")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get detailed information about cluster partitions."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         partitions = await slurm.get_partitions()
         
@@ -147,10 +200,12 @@ async def get_node_info(
     node_name: Annotated[Optional[str], Field(description="Specific node name")] = None,
     partition: Annotated[Optional[str], Field(description="Filter by partition")] = None,
     state: Annotated[Optional[str], Field(description="Filter by state (idle, allocated, down, etc.)")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get information about cluster nodes."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         nodes = await slurm.get_nodes(partition=partition, state=state)
         
@@ -186,10 +241,12 @@ async def get_node_info(
 async def get_gpu_info(
     partition: Annotated[Optional[str], Field(description="Filter by partition")] = None,
     gpu_type: Annotated[Optional[str], Field(description="Filter by GPU type (e.g., 'a100', 'v100')")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get information about available GPU resources in the cluster."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         gpu_info = await slurm.get_gpu_info(partition=partition)
         
@@ -223,10 +280,12 @@ async def get_gpu_availability(
     partition: Annotated[Optional[str], Field(description="Filter by partition")] = None,
     gpu_type: Annotated[Optional[str], Field(description="Filter by GPU type")] = None,
     min_gpus: Annotated[Optional[int], Field(description="Minimum number of GPUs needed")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Check current GPU availability - how many GPUs are free vs allocated."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         gpu_info = await slurm.get_gpu_info(partition=partition)
         
@@ -260,10 +319,12 @@ async def list_jobs(
     user: Annotated[Optional[str], Field(description="Filter by username")] = None,
     partition: Annotated[Optional[str], Field(description="Filter by partition")] = None,
     state: Annotated[Optional[str], Field(description="Filter by job state (PENDING, RUNNING, etc.)")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """List jobs in the Slurm queue."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         jobs = await slurm.get_jobs(user=user, partition=partition, state=state)
         
@@ -293,10 +354,12 @@ async def list_jobs(
 @mcp.tool()
 async def get_job_details(
     job_id: Annotated[int, Field(description="The Slurm job ID")],
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get detailed information about a specific job."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         job = await slurm.get_job_details(job_id)
         
@@ -356,10 +419,12 @@ async def submit_job(
     container_image: Annotated[Optional[str], Field(description="Path to container .sqsh image file")] = None,
     container_mounts: Annotated[Optional[str], Field(description="Container bind mounts")] = None,
     container_workdir: Annotated[Optional[str], Field(description="Working directory inside container")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Submit a batch job to the Slurm cluster. Returns the job ID on success."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         job = JobSubmission(
             script_content=script_content,
@@ -396,10 +461,12 @@ async def submit_job(
 async def cancel_job(
     job_id: Annotated[int, Field(description="The Slurm job ID to cancel")],
     signal: Annotated[Optional[str], Field(description="Signal to send (e.g., 'SIGTERM', 'SIGKILL')")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Cancel a running or pending job."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         success = await slurm.scancel(job_id, signal=signal)
         
@@ -415,10 +482,12 @@ async def cancel_job(
 @mcp.tool()
 async def hold_job(
     job_id: Annotated[int, Field(description="The Slurm job ID to hold")],
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Put a pending job on hold."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         success = await slurm.scontrol_hold(job_id)
         
@@ -434,10 +503,12 @@ async def hold_job(
 @mcp.tool()
 async def release_job(
     job_id: Annotated[int, Field(description="The Slurm job ID to release")],
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Release a held job."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         success = await slurm.scontrol_release(job_id)
         
@@ -456,10 +527,12 @@ async def get_job_history(
     user: Annotated[Optional[str], Field(description="Filter by username")] = None,
     start_time: Annotated[Optional[str], Field(description="Start time (e.g., '2024-01-01', 'now-7days')")] = None,
     end_time: Annotated[Optional[str], Field(description="End time")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get job accounting/history information."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         output = await slurm.sacct(
             job_id=job_id,
@@ -482,10 +555,12 @@ async def get_job_history(
 async def list_container_images(
     image_dir: Annotated[Optional[str], Field(description="Directory to search for .sqsh images")] = None,
     pattern: Annotated[Optional[str], Field(description="Filter images by name pattern (e.g., 'pytorch*')")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """List available container images (.sqsh files) for Pyxis/enroot."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         images = await slurm.list_container_images(directory=image_dir, pattern=pattern)
         
@@ -510,10 +585,12 @@ async def list_container_images(
 @mcp.tool()
 async def validate_container_image(
     image_path: Annotated[str, Field(description="Path to the .sqsh container image")],
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Validate that a container image exists and is readable."""
     try:
-        _, _, slurm, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        slurm = instances.slurm_commands
         
         is_valid = await slurm.validate_container_image(image_path)
         
@@ -542,10 +619,12 @@ async def run_interactive_command(
     container_mounts: Annotated[Optional[str], Field(description="Container mounts")] = None,
     working_directory: Annotated[Optional[str], Field(description="Working directory for command")] = None,
     timeout: Annotated[Optional[int], Field(description="Command timeout in seconds")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Execute a single command with interactive-partition resources (one-shot allocation)."""
     try:
-        _, _, _, sessions, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
         
         result = await sessions.run_command(
             command=command,
@@ -581,10 +660,12 @@ async def start_interactive_session(
     time_limit: Annotated[Optional[str], Field(description="Time limit (e.g., '4:00:00')")] = None,
     container_image: Annotated[Optional[str], Field(description="Container .sqsh image path")] = None,
     container_mounts: Annotated[Optional[str], Field(description="Container mounts")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Start a persistent interactive session using salloc."""
     try:
-        _, _, _, sessions, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
         
         session = await sessions.start_session(
             session_name=session_name,
@@ -598,8 +679,9 @@ async def start_interactive_session(
         )
         
         name_str = f" '{session.session_name}'" if session.session_name else ""
+        cluster_name = instances.config.name
         return (
-            f"Session{name_str} started successfully.\n"
+            f"Session{name_str} started successfully on cluster '{cluster_name}'.\n"
             f"  Session ID: {session.session_id}\n"
             f"  Job ID: {session.job_id}\n"
             f"  Partition: {session.partition}\n"
@@ -620,10 +702,12 @@ async def exec_in_session(
     command: Annotated[str, Field(description="Command to execute")],
     working_directory: Annotated[Optional[str], Field(description="Working directory")] = None,
     timeout: Annotated[Optional[int], Field(description="Command timeout in seconds")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Execute a command in an existing interactive session."""
     try:
-        _, _, _, sessions, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
         
         result = await sessions.exec_command(
             session_id=session_id,
@@ -646,17 +730,21 @@ async def exec_in_session(
 
 
 @mcp.tool()
-async def list_interactive_sessions() -> str:
+async def list_interactive_sessions(
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
+) -> str:
     """List all active interactive sessions managed by this MCP server."""
     try:
-        _, _, _, sessions, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
         
         active_sessions = await sessions.list_sessions()
         
         if not active_sessions:
             return "No active interactive sessions."
         
-        lines = [f"Active Sessions ({len(active_sessions)}):", ""]
+        cluster_name = instances.config.name
+        lines = [f"Active Sessions on '{cluster_name}' ({len(active_sessions)}):", ""]
         
         for s in active_sessions:
             name_str = f" ({s.session_name})" if s.session_name else ""
@@ -677,10 +765,12 @@ async def list_interactive_sessions() -> str:
 @mcp.tool()
 async def end_interactive_session(
     session_id: Annotated[str, Field(description="Session ID to terminate")],
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """End an interactive session and release its resources."""
     try:
-        _, _, _, sessions, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
         
         success = await sessions.end_session(session_id)
         
@@ -696,10 +786,12 @@ async def end_interactive_session(
 @mcp.tool()
 async def get_interactive_session_info(
     session_id: Annotated[str, Field(description="Session ID")],
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Get detailed information about an interactive session."""
     try:
-        _, _, _, sessions, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
         
         session = await sessions.get_session(session_id)
         
@@ -745,10 +837,12 @@ async def save_interactive_profile(
     time_limit: Annotated[Optional[str], Field(description="Time limit")] = None,
     container_image: Annotated[Optional[str], Field(description="Container image")] = None,
     container_mounts: Annotated[Optional[str], Field(description="Container mounts")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Save an interactive session profile for quick reuse."""
     try:
-        _, _, _, _, profiles, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        profiles = instances.profile_manager
         
         profile = InteractiveProfile(
             name=profile_name,
@@ -771,10 +865,13 @@ async def save_interactive_profile(
 
 
 @mcp.tool()
-async def list_interactive_profiles() -> str:
+async def list_interactive_profiles(
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
+) -> str:
     """List saved interactive session profiles."""
     try:
-        _, _, _, _, profiles, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        profiles = instances.profile_manager
         
         profile_list = await profiles.list_profiles()
         
@@ -805,10 +902,13 @@ async def start_session_from_profile(
     profile_name: Annotated[str, Field(description="Profile name to use")],
     session_name: Annotated[Optional[str], Field(description="Optional session name")] = None,
     time_limit: Annotated[Optional[str], Field(description="Override time limit")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Start an interactive session using a saved profile."""
     try:
-        _, _, _, sessions, profiles, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        sessions = instances.session_manager
+        profiles = instances.profile_manager
         
         profile = await profiles.get_profile(profile_name)
         
@@ -842,15 +942,19 @@ async def start_session_from_profile(
 # =============================================================================
 
 @mcp.tool()
-async def get_cluster_directories() -> str:
+async def get_cluster_directories(
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
+) -> str:
     """Get the configured cluster directory structure."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         dirs = directories.get_cluster_directories()
         
+        cluster_name = instances.config.name
         lines = [
-            "Cluster Directory Structure:",
+            f"Cluster Directory Structure ({cluster_name}):",
             f"  User Root: {dirs.user_root}",
             "",
             "Configured Directories (host path -> container mount):",
@@ -882,10 +986,12 @@ async def list_directory(
     path: Annotated[str, Field(description="Directory path to list")] = "",
     directory_type: Annotated[Optional[str], Field(description="Directory type: 'datasets', 'results', 'models', 'logs', 'projects'")] = None,
     pattern: Annotated[Optional[str], Field(description="Filter by glob pattern")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """List contents of a directory on the cluster."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         listing = await directories.list_directory(
             path=path,
@@ -915,10 +1021,12 @@ async def list_directory(
 @mcp.tool()
 async def list_datasets(
     pattern: Annotated[Optional[str], Field(description="Filter by pattern")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """List available datasets in the datasets directory."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         items = await directories.list_datasets(pattern=pattern)
         
@@ -940,10 +1048,12 @@ async def list_datasets(
 async def list_model_checkpoints(
     model_name: Annotated[Optional[str], Field(description="Filter by model name/directory")] = None,
     pattern: Annotated[Optional[str], Field(description="Filter by pattern")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """List model checkpoints in the models directory."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         items = await directories.list_model_checkpoints(model_name=model_name, pattern=pattern)
         
@@ -966,10 +1076,12 @@ async def list_job_logs(
     job_id: Annotated[Optional[int], Field(description="Filter by job ID")] = None,
     job_name: Annotated[Optional[str], Field(description="Filter by job name pattern")] = None,
     recent: Annotated[Optional[int], Field(description="Only show N most recent logs")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """List job log files in the logs directory."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         items = await directories.list_job_logs(job_id=job_id, job_name=job_name, recent=recent)
         
@@ -992,10 +1104,12 @@ async def read_file(
     directory_type: Annotated[Optional[str], Field(description="Base directory type")] = None,
     tail_lines: Annotated[Optional[int], Field(description="Only read last N lines")] = None,
     head_lines: Annotated[Optional[int], Field(description="Only read first N lines")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Read contents of a file on the cluster."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         content = await directories.read_file(
             path=path,
@@ -1016,10 +1130,12 @@ async def write_file(
     content: Annotated[str, Field(description="File content")],
     directory_type: Annotated[Optional[str], Field(description="Base directory type")] = None,
     append: Annotated[bool, Field(description="Append instead of overwrite")] = False,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Write content to a file on the cluster."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         await directories.write_file(
             path=path,
@@ -1043,10 +1159,12 @@ async def find_files(
     file_type: Annotated[Optional[str], Field(description="Filter by type: 'file', 'dir', 'link'")] = None,
     min_size: Annotated[Optional[str], Field(description="Minimum size (e.g., '1G', '100M')")] = None,
     max_age: Annotated[Optional[str], Field(description="Maximum age (e.g., '7d', '24h')")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Search for files across cluster directories."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         items = await directories.find_files(
             pattern=pattern,
@@ -1077,13 +1195,15 @@ async def delete_file(
     directory_type: Annotated[Optional[str], Field(description="Base directory type")] = None,
     recursive: Annotated[bool, Field(description="Delete directories recursively")] = False,
     confirm: Annotated[bool, Field(description="Confirm deletion (must be True)")] = False,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
     """Delete a file or directory on the cluster. Requires confirm=True for safety."""
     if not confirm:
         return "Deletion not confirmed. Set confirm=True to delete."
     
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         await directories.delete_file(
             path=path,
@@ -1099,33 +1219,36 @@ async def delete_file(
 
 @mcp.tool()
 async def get_disk_usage(
-    directory_type: Annotated[Optional[str], Field(description="Check specific directory type")] = None,
-    path: Annotated[Optional[str], Field(description="Check specific path")] = None,
+    directory_type: Annotated[Optional[str], Field(description="Check usage of specific directory type")] = None,
+    path: Annotated[Optional[str], Field(description="Check usage of specific path")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
-    """Get disk usage for cluster directories."""
+    """Get disk usage information for configured directories."""
     try:
-        _, _, _, _, _, directories = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        directories = instances.directory_manager
         
         usage = await directories.get_disk_usage(
             directory_type=directory_type,
             path=path,
         )
         
+        if not usage:
+            return "Could not get disk usage information."
+        
         lines = ["Disk Usage:", ""]
         
-        for name, stats in usage.items():
-            if name == "filesystem":
-                continue
-            lines.append(f"  {name}: {stats['size_human']}")
-            lines.append(f"    Path: {stats['path']}")
-        
+        # Show filesystem info first if available
         if "filesystem" in usage:
             fs = usage["filesystem"]
+            lines.append(f"Filesystem: {fs['used_human']} used / {fs['total_human']} total ({fs['available_human']} available)")
             lines.append("")
-            lines.append("Filesystem:")
-            lines.append(f"  Total: {fs['total_human']}")
-            lines.append(f"  Used: {fs['used_human']}")
-            lines.append(f"  Available: {fs['available_human']}")
+            del usage["filesystem"]
+        
+        # Show directory usage
+        for name, info in usage.items():
+            lines.append(f"  {name}: {info['size_human']}")
+            lines.append(f"    Path: {info['path']}")
         
         return "\n".join(lines)
         
@@ -1137,11 +1260,13 @@ async def get_disk_usage(
 async def run_shell_command(
     command: Annotated[str, Field(description="Shell command to execute")],
     working_directory: Annotated[Optional[str], Field(description="Working directory")] = None,
-    timeout: Annotated[Optional[int], Field(description="Timeout in seconds")] = None,
+    timeout: Annotated[Optional[int], Field(description="Command timeout in seconds")] = None,
+    cluster: Annotated[Optional[str], Field(description="Cluster name (uses default if not specified)")] = None,
 ) -> str:
-    """Execute a shell command on the Slurm login node. Use with caution."""
+    """Run a shell command directly on the cluster login node (not via Slurm)."""
     try:
-        _, ssh, _, _, _, _ = await get_instances()
+        instances = await get_cluster_instances(cluster)
+        ssh = instances.ssh_client
         
         result = await ssh.execute(
             command=command,
@@ -1157,17 +1282,30 @@ async def run_shell_command(
             return f"Command failed (exit code {result.return_code}):\n{output}"
         
     except Exception as e:
-        raise ToolError(f"Failed to run command: {e}")
+        raise ToolError(f"Failed to run shell command: {e}")
 
 
 # =============================================================================
-# Main Entry Point
+# Server Lifecycle
 # =============================================================================
 
-def main():
-    """Main entry point for the MCP server."""
-    mcp.run()
+@mcp.on_event("startup")
+async def on_startup():
+    """Initialize on server startup."""
+    logger.info("Slurm MCP server starting...")
+    try:
+        manager = await get_manager()
+        clusters = manager.list_clusters()
+        logger.info(f"Configured {len(clusters)} cluster(s): {[c['name'] for c in clusters]}")
+    except Exception as e:
+        logger.error(f"Failed to initialize cluster manager: {e}")
 
 
-if __name__ == "__main__":
-    main()
+@mcp.on_event("shutdown")
+async def on_shutdown():
+    """Cleanup on server shutdown."""
+    global _manager
+    logger.info("Slurm MCP server shutting down...")
+    if _manager is not None:
+        await _manager.disconnect_all()
+        _manager = None

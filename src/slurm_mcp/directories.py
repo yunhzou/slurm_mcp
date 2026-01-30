@@ -5,11 +5,14 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from slurm_mcp.config import Settings
+from slurm_mcp.config import ClusterConfig, Settings
 from slurm_mcp.models import ClusterDirectories, DirectoryListing, FileInfo
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
+
+# Type alias to support both Settings and ClusterConfig
+ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +73,12 @@ class DirectoryManager:
         "images": "image_dir",
     }
     
-    def __init__(self, ssh_client: SSHClient, settings: Settings):
+    def __init__(self, ssh_client: SSHClient, settings: ConfigType):
         """Initialize directory manager.
         
         Args:
             ssh_client: SSH client for remote operations.
-            settings: Configuration settings.
+            settings: Configuration settings (Settings or ClusterConfig).
         """
         self.ssh = ssh_client
         self.settings = settings

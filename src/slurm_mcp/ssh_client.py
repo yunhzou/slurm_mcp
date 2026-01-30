@@ -3,12 +3,15 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import asyncssh
 
-from slurm_mcp.config import Settings
+from slurm_mcp.config import ClusterConfig, Settings
 from slurm_mcp.models import CommandResult
+
+# Type alias to support both Settings and ClusterConfig
+ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +53,12 @@ class SSHClient:
     and file operations over SSH using asyncssh.
     """
     
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: ConfigType):
         """Initialize SSH client with settings.
         
         Args:
             settings: Configuration settings containing SSH connection details.
+                     Can be either Settings (legacy) or ClusterConfig (multi-cluster).
         """
         self.settings = settings
         self._connection: Optional[asyncssh.SSHClientConnection] = None

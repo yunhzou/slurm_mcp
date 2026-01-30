@@ -4,12 +4,15 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Union
 
-from slurm_mcp.config import Settings
+from slurm_mcp.config import ClusterConfig, Settings
 from slurm_mcp.models import CommandResult, InteractiveSession
 from slurm_mcp.slurm_commands import SlurmCommands
 from slurm_mcp.ssh_client import SSHClient, SSHCommandError
+
+# Type alias to support both Settings and ClusterConfig
+ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +28,14 @@ class InteractiveSessionManager:
         self,
         ssh_client: SSHClient,
         slurm: SlurmCommands,
-        settings: Settings,
+        settings: ConfigType,
     ):
         """Initialize the interactive session manager.
         
         Args:
             ssh_client: SSH client for remote operations.
             slurm: Slurm commands wrapper.
-            settings: Configuration settings.
+            settings: Configuration settings (Settings or ClusterConfig).
         """
         self.ssh = ssh_client
         self.slurm = slurm

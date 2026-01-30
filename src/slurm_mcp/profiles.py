@@ -4,11 +4,14 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from slurm_mcp.config import Settings
+from slurm_mcp.config import ClusterConfig, Settings
 from slurm_mcp.models import InteractiveProfile
 from slurm_mcp.ssh_client import SSHClient
+
+# Type alias to support both Settings and ClusterConfig
+ConfigType = Union[Settings, ClusterConfig]
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +59,12 @@ class ProfileManager:
     Profiles are stored as JSON on the remote cluster.
     """
     
-    def __init__(self, ssh_client: SSHClient, settings: Settings):
+    def __init__(self, ssh_client: SSHClient, settings: ConfigType):
         """Initialize profile manager.
         
         Args:
             ssh_client: SSH client for remote file operations.
-            settings: Configuration settings.
+            settings: Configuration settings (Settings or ClusterConfig).
         """
         self.ssh = ssh_client
         self.settings = settings

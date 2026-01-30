@@ -4,6 +4,7 @@ An MCP (Model Context Protocol) server that enables AI agents to interact with r
 
 ## Features
 
+- **Multi-Cluster Support**: Manage multiple Slurm clusters from a single server
 - **Remote Slurm Management**: Submit, monitor, and cancel jobs via SSH
 - **GPU Support**: Query GPU availability and allocate GPU resources
 - **Pyxis/Enroot Containers**: Support for containerized workloads with `.sqsh` images
@@ -32,7 +33,13 @@ pip install -e ".[dev]"
 cd /path/to/slurm_mcp
 pip install -e .
 
-# Configure
+# Configure (choose one method):
+
+# Method 1: Multi-cluster via JSON config (recommended for multiple clusters)
+cp clusters.json.example clusters.json
+# Edit clusters.json with your cluster details
+
+# Method 2: Single cluster via environment variables
 cp .env.example .env
 # Edit .env with your cluster details
 
@@ -45,7 +52,61 @@ slurm-mcp
 
 ## Configuration
 
-The server is configured via environment variables with the `SLURM_` prefix.
+### Multi-Cluster Configuration (Recommended)
+
+For managing multiple Slurm clusters, use a JSON configuration file:
+
+```bash
+# Copy the example configuration
+cp clusters.json.example clusters.json
+```
+
+The server looks for configuration in this order:
+1. `SLURM_CLUSTERS_CONFIG` environment variable (path to JSON file)
+2. `./clusters.json` in current directory
+3. `~/.slurm_mcp/clusters.json` in home directory
+4. Falls back to environment variables (single cluster mode)
+
+#### clusters.json Format
+
+```json
+{
+  "default_cluster": "production",
+  "clusters": [
+    {
+      "name": "production",
+      "description": "Main production HPC cluster",
+      "ssh_host": "login.production-hpc.example.com",
+      "ssh_port": 22,
+      "ssh_user": "your_username",
+      "ssh_key_path": "~/.ssh/id_rsa",
+      "user_root": "/lustre/users/your_username",
+      "default_account": "your_project",
+      "default_partition": "batch",
+      "gpu_partitions": "gpu,interactive",
+      "interactive_partition": "interactive",
+      "interactive_default_time": "4:00:00",
+      "interactive_default_gpus": 8
+    },
+    {
+      "name": "dev",
+      "description": "Development cluster",
+      "ssh_host": "login.dev-cluster.example.com",
+      "ssh_user": "your_username",
+      "ssh_key_path": "~/.ssh/id_rsa_dev",
+      "user_root": "/home/your_username",
+      "default_partition": "debug",
+      "interactive_default_gpus": 1
+    }
+  ]
+}
+```
+
+See `clusters.json.example` for a complete example with all available options.
+
+### Single-Cluster Configuration (Legacy)
+
+For a single cluster, use environment variables with the `SLURM_` prefix.
 
 ### Required Settings
 
@@ -267,6 +328,16 @@ SLURM_SSH_HOST=login.example.com SLURM_SSH_USER=user slurm-mcp
 
 ## Available Tools
 
+### Cluster Management (3 tools)
+
+| Tool | Description |
+|------|-------------|
+| `list_clusters` | List all configured clusters and connection status |
+| `set_default_cluster` | Set the default cluster for subsequent operations |
+| `connect_cluster` | Explicitly connect to a cluster |
+
+**Note:** All tools below accept an optional `cluster` parameter to specify which cluster to operate on. If not specified, the default cluster is used.
+
 ### Cluster Status (5 tools)
 
 | Tool | Description |
@@ -372,6 +443,34 @@ User: My job 12345 failed, show me the error logs
 Agent:
 1. get_job_details(job_id=12345)  # Get job info and log paths
 2. read_file(path="/logs/job-12345.err", tail_lines=100)
+```
+
+### Multi-Cluster Operations
+
+```
+User: Check GPU availability across all my clusters and submit to the one with most available
+
+Agent:
+1. list_clusters()  # See all configured clusters
+   # Returns: production (default), dev, cloud
+
+2. get_gpu_availability(cluster="production")  # 32/64 available
+3. get_gpu_availability(cluster="dev")         # 4/8 available  
+4. get_gpu_availability(cluster="cloud")       # 128/256 available
+
+5. submit_job(
+     script_content="python train.py",
+     gpus=8,
+     cluster="cloud"  # Submit to cloud cluster with most availability
+   )
+```
+
+```
+User: Compare job queues between production and dev clusters
+
+Agent:
+1. list_jobs(cluster="production", state="PENDING")
+2. list_jobs(cluster="dev", state="PENDING")
 ```
 
 ## Security Considerations
